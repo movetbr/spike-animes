@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { AnimeFireProvider } from './providers/AnimeFireProvider';
 import { AnimesOnlineProvider } from './providers/AnimesOnlineProvider';
+import axios from 'axios';
 
 const app = new Hono();
 app.use('/*', cors());
@@ -99,6 +100,104 @@ app.get('/video/:slug/:episode', async (c) => {
   }, 500);
 });
 
+// ===== ROTA: Detalhes Unificados (Bridge Jikan + AnimeFire) =====
+app.get('/anime-details/:id', async (c) => {
+  const id = c.req.param('id');
+  const idStr = String(id);
+  const isMalId = idStr.startsWith('jikan-') || !isNaN(Number(idStr));
+  const malId = idStr.startsWith('jikan-') ? idStr.replace('jikan-', '') : idStr;
+
+  try {
+    let baseData: any = null;
+
+    if (isMalId) {
+      console.log(`[Bridge] Requisitando Jikan para MAL ID: ${malId}`);
+      try {
+        const jikanRes = await axios.get(`https://api.jikan.moe/v4/anime/${malId}/full`);
+        const anime = jikanRes.data.data;
+
+        baseData = {
+          id: `jikan-${malId}`,
+          malId: parseInt(malId),
+          title: anime.title,
+          englishName: anime.title_english || null,
+          originalTitle: anime.title_japanese || anime.title, // Romaji/Japanese
+          description: anime.synopsis,
+          thumbnail: anime.images?.webp?.large_image_url || anime.images?.jpg?.large_image_url,
+          genres: anime.genres?.map((g: any) => g.name) || [],
+          status: anime.status,
+          type: anime.type,
+          score: anime.score,
+          rating: anime.rating,
+          episodes: null
+        };
+
+        // Smart Linking: Busca no AnimeFire usando os títulos do Jikan
+        const searchTerms = [anime.title, anime.title_japanese, anime.title_english].filter(Boolean);
+        console.log(`[Bridge] Smart Linking: Testando termos: ${searchTerms.join(', ')}`);
+
+        let localMatch = null;
+        for (const term of searchTerms) {
+          const results = await provider.search(term);
+          if (results.length > 0) {
+            // Fuzzy match simples: verifica se o título do resultado contém parte do termo
+            localMatch = results.find(r =>
+              r.title.toLowerCase().includes(anime.title.toLowerCase().split(' ')[0])
+            ) || results[0];
+            break;
+          }
+        }
+
+        if (localMatch) {
+          console.log(`[Bridge] Match encontrado: ${localMatch.title} (${localMatch.id})`);
+          const episodesData = await provider.getEpisodes(localMatch.id);
+          baseData.episodes = episodesData.episodes;
+          baseData.id = localMatch.id; // Atualiza ID para o slug do AnimeFire para facilitar streaming
+        }
+      } catch (jikanError: any) {
+        console.error(`[Bridge] Erro ao consultar Jikan: ${jikanError.message}`);
+      }
+    }
+
+    // Se não for MAL ID ou Jikan falhou, tenta buscar direto no AnimeFire pelo ID (slug)
+    if (!baseData || !baseData.episodes) {
+      console.log(`[Bridge] Buscando diretamente no AnimeFire pelo slug: ${id}`);
+      try {
+        const directData = await provider.getEpisodes(id);
+        if (!baseData) {
+          baseData = {
+            id: directData.animeSlug || id,
+            title: directData.title,
+            description: directData.synopsis,
+            thumbnail: directData.cover,
+            genres: directData.genres ? directData.genres.split(', ') : [],
+            score: parseFloat(directData.score) || null,
+            episodes: directData.episodes
+          };
+        } else {
+          baseData.episodes = directData.episodes;
+        }
+      } catch (directError: any) {
+        if (!baseData) throw directError;
+      }
+    }
+
+    return c.json({
+      status: 'success',
+      source: 'Kaizen-Bridge',
+      data: baseData
+    });
+
+  } catch (error: any) {
+    console.error(`[Bridge Error] ${error.message}`);
+    return c.json({
+      status: 'error',
+      message: error.message,
+      response: { status: '500', text: 'Internal Server Error' }
+    }, 500);
+  }
+});
+
 // ===== ROTA: Busca completa estilo API PHP (slug ou link) =====
 // Replica exatamente a api.php do MestreTM
 app.get('/api', async (c) => {
@@ -167,6 +266,5 @@ app.get('/api', async (c) => {
 const port = parseInt(process.env.PORT || '3000');
 console.log(`\n🔥 Kaizen API (AnFireAPI TypeScript Edition)`);
 console.log(`➡️  Provedores: ${videoFallbackProviders.map(p => p.name).join(', ')}`);
-console.log(`🚀 Servidor rodando em http://localhost:${port}\n`);
 
 serve({ fetch: app.fetch, port });

@@ -24,28 +24,33 @@ export class AnimeFireProvider extends AnimeProvider {
 
   // ===== BUSCA (index.php → extractSearchResults) =====
   async search(query: string): Promise<AnimeResult[]> {
-    const url = `${this.baseUrl}/pesquisar/${encodeURIComponent(query)}`;
-    const { data } = await axios.get(url, { headers: this.headers });
-    const $ = cheerio.load(data);
-    const results: AnimeResult[] = [];
+    try {
+      const url = `${this.baseUrl}/pesquisar/${encodeURIComponent(query)}`;
+      const { data } = await axios.get(url, { headers: this.headers });
+      const $ = cheerio.load(data);
+      const results: AnimeResult[] = [];
 
-    // Seletor original do PHP: div[contains(@class, 'divCardUltimosEps')]
-    $("div.divCardUltimosEps").each((_, el) => {
-      const link = $(el).find('a').attr('href');
-      const img = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
-      const title = $(el).find('h3.animeTitle').text().trim();
+      // Seletor original do PHP: div[contains(@class, 'divCardUltimosEps')]
+      $("div.divCardUltimosEps").each((_, el) => {
+        const link = $(el).find('a').attr('href');
+        const img = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
+        const title = $(el).find('h3.animeTitle').text().trim();
 
-      if (title && link) {
-        results.push({
-          title,
-          url: link,
-          cover: img,
-          id: link.split('/').pop()!
-        });
-      }
-    });
+        if (title && link) {
+          results.push({
+            title,
+            url: link,
+            cover: img,
+            id: link.split('/').pop()!
+          });
+        }
+      });
 
-    return results;
+      return results;
+    } catch (error: any) {
+      console.error(`[Search Error] ${error.message}`);
+      return []; // Retorna lista vazia em vez de quebrar
+    }
   }
 
   // ===== DETALHES + EPISÓDIOS (api.php → fetchAnime* + testEpisodes) =====
