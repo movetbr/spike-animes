@@ -2,7 +2,7 @@
   "name": "kaizen-api",
   "version": "1.0.0",
   "description": "Anime API for Kaizen",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
