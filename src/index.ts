@@ -100,142 +100,89 @@ app.get('/video/:slug/:episode', async (c) => {
   }, 500);
 });
 
-// ===== ROTA: Detalhes Unificados (Bridge Jikan + AnimeFire) =====
+// ===== ROTA: Detalhes Unificados (Apenas AnimeFire - Sem Jikan) =====
 app.get('/anime-details/:id', async (c) => {
-  const id = c.req.param('id');
-  const idStr = String(id);
-  const isMalId = idStr.startsWith('jikan-') || !isNaN(Number(idStr));
-  const malId = idStr.startsWith('jikan-') ? idStr.replace('jikan-', '') : idStr;
-
   try {
-    let baseData: any = null;
+    const id = c.req.param('id');
+    const queryTitle = c.req.query('title');
+    const idStr = id.toString();
+    const isNumericId = !isNaN(Number(idStr));
 
-    if (isMalId) {
-      console.log(`[Bridge] Requisitando Jikan para MAL ID: ${malId}`);
-      try {
-        const jikanRes = await axios.get(`https://api.jikan.moe/v4/anime/${malId}/full`);
-        const anime = jikanRes.data.data;
+    let animeData: any = null;
 
-        baseData = {
-          id: `jikan-${malId}`,
-          malId: parseInt(malId),
-          title: anime.title,
-          englishName: anime.title_english || null,
-          originalTitle: anime.title_japanese || anime.title, // Romaji/Japanese
-          description: anime.synopsis,
-          thumbnail: anime.images?.webp?.large_image_url || anime.images?.jpg?.large_image_url,
-          genres: anime.genres?.map((g: any) => g.name) || [],
-          status: anime.status,
-          type: anime.type,
-          score: anime.score,
-          rating: anime.rating,
-          episodes: null
-        };
+    // Se tivermos um título (passado pelo app via hook do Jikan), fazemos a ponte
+    if (queryTitle) {
+      console.log(`[Backend-Spike] Bridge: Buscando match no AnimeFire para: ${queryTitle}`);
+      const results = await provider.search(queryTitle);
+      
+      if (results && results.length > 0) {
+        // Encontra o match mais próximo do título enviado
+        const normalizedTarget = queryTitle.toLowerCase().trim();
+        const bestMatch = results.find(r => {
+          const rTitle = r.title.toLowerCase().replace(/\s*\(dublado\)\s*/i, '').trim();
+          return rTitle === normalizedTarget;
+        }) || results.find(r => r.title.toLowerCase().includes(normalizedTarget)) || results[0];
 
-        // Smart Linking: Busca no AnimeFire usando os títulos do Jikan (priorizando o principal)
-        const searchTerms = [anime.title, anime.title_english, anime.title_japanese].filter(Boolean);
-        console.log(`[Bridge] Smart Linking: Testando termos: ${searchTerms.join(', ')}`);
-
-        let localMatch = null;
-        for (const term of searchTerms) {
-          const results = await provider.search(term);
-          if (results.length > 0) {
-            const jikanTitle = anime.title.toLowerCase().trim();
-            const jikanTitleEng = (anime.title_english || "").toLowerCase().trim();
-
-            localMatch = results.find(r => {
-              const rTitle = r.title.toLowerCase().replace(/\s*\(dublado\)\s*/i, '').trim();
-              return rTitle === jikanTitle || rTitle === jikanTitleEng;
-            });
-
-            if (!localMatch) {
-              const potentialMatches = results.filter(r => 
-                r.title.toLowerCase().includes(jikanTitle) || 
-                r.title.toLowerCase().includes(jikanTitleEng)
-              );
-              if (potentialMatches.length > 0) {
-                localMatch = potentialMatches.sort((a, b) => a.title.length - b.title.length)[0];
-              }
-            }
-
-            if (localMatch) break;
-          }
-        }
-
-        if (localMatch) {
-          console.log(`[Bridge] Match encontrado: ${localMatch.title} (${localMatch.id})`);
-          const episodesData = await provider.getEpisodes(localMatch.id);
-          
-          // Hybrid Episode Merge: Jikan (thumbnails) + AnimeFire (slugs/streaming)
-          let jikanEpisodes: any[] = [];
+        console.log(`[Backend-Spike] Match encontrado: ${bestMatch.id}`);
+        const fullData = await provider.getEpisodes(bestMatch.id);
+        
+        // Tenta pegar o link de vídeo do primeiro episódio para playback imediato
+        let firstEpisodeVideoUrl = null;
+        if (fullData.episodes && fullData.episodes.length > 0) {
           try {
-             const jikanEpsRes = await axios.get(`https://api.jikan.moe/v4/anime/${malId}/videos/episodes`);
-             jikanEpisodes = jikanEpsRes.data.data || [];
-          } catch (e: any) {
-             console.warn(`[Bridge] Não foi possível pegar episódios do Jikan: ${e.message}`);
+            const firstEp = fullData.episodes[0];
+            const videoData = await (provider as any).extractVideoLinks(firstEp.id);
+            if (videoData && videoData.length > 0) {
+              // Pega a maior qualidade disponível (geralmente a última da lista)
+              firstEpisodeVideoUrl = videoData[videoData.length - 1].url;
+            }
+          } catch (vErr) {
+            console.warn(`[Backend-Spike] Erro ao pré-carregar vídeo: ${vErr}`);
           }
-
-          const hybridEpisodes = episodesData.episodes.map((afEp, index) => {
-            const epNumStr = afEp.title.match(/Episódio (\d+)/)?.[1] || (index + 1).toString();
-            const epNum = parseInt(epNumStr);
-            const jikanEp = jikanEpisodes.find((j: any) => j.mal_id === epNum);
-            
-            return {
-              ...afEp,
-              number: epNum,
-              thumbnail: jikanEp?.images?.jpg?.image_url || null,
-            };
-          });
-
-          // Prioridade para dados do AnimeFire (PT-BR) conforme pedido do usuário
-          baseData.title = localMatch.title;
-          baseData.thumbnail = localMatch.cover || baseData.thumbnail;
-          baseData.description = episodesData.synopsis || baseData.description;
-          baseData.episodes = hybridEpisodes;
-          baseData.id = localMatch.id; 
-          baseData.foundOnProvider = true;
         }
-      } catch (jikanError: any) {
-        console.error(`[Bridge] Erro ao consultar Jikan: ${jikanError.message}`);
+
+        animeData = {
+          id: bestMatch.id, 
+          title: fullData.title || bestMatch.title,
+          description: fullData.synopsis,
+          thumbnail: fullData.cover || bestMatch.cover,
+          episodes: fullData.episodes,
+          video_url: firstEpisodeVideoUrl,
+          score: fullData.score,
+          genres: fullData.genres,
+          foundOnProvider: true
+        };
       }
     }
 
-    // Se não for MAL ID ou Jikan falhou, tenta buscar direto no AnimeFire pelo ID (slug)
-    if (!baseData || !baseData.episodes) {
-      console.log(`[Bridge] Buscando diretamente no AnimeFire pelo slug: ${id}`);
+    // Se for um ID numérico mas não achamos pelo título, ou se o ID já for o Slug direto
+    if (!animeData) {
       try {
-        const directData = await provider.getEpisodes(id);
-        if (!baseData) {
-          baseData = {
-            id: directData.animeSlug || id,
-            title: directData.title,
-            description: directData.synopsis,
-            thumbnail: directData.cover,
-            genres: directData.genres ? directData.genres.split(', ') : [],
-            score: parseFloat(directData.score) || null,
-            episodes: directData.episodes
-          };
-        } else {
-          baseData.episodes = directData.episodes;
-        }
-      } catch (directError: any) {
-        if (!baseData) throw directError;
+        console.log(`[Backend-Spike] Tentativa via ID direto: ${id}`);
+        // Isso resolve o seu exemplo: spike-animes.onrender.com/anime/frieren-todos-os-episodios
+        const directData = await provider.getEpisodes(id); 
+        animeData = {
+           id: id,
+           title: directData.title,
+           description: directData.synopsis,
+           thumbnail: directData.cover,
+           episodes: directData.episodes,
+           score: directData.score
+        };
+      } catch (e) {
+        throw new Error('Anime não encontrado no AnimeFire.');
       }
     }
 
     return c.json({
       status: 'success',
-      source: 'Kaizen-Bridge',
-      data: baseData
+      source: 'AnimeFire-Only',
+      data: animeData
     });
 
   } catch (error: any) {
-    console.error(`[Bridge Error] ${error.message}`);
-    return c.json({
-      status: 'error',
-      message: error.message,
-      response: { status: '500', text: 'Internal Server Error' }
-    }, 500);
+    console.error(`[Backend-Spike Error] ${error.message}`);
+    return c.json({ status: 'error', message: error.message }, 404);
   }
 });
 
