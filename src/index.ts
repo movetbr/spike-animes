@@ -126,28 +126,12 @@ app.get('/anime-details/:id', async (c) => {
         console.log(`[Backend-Spike] Match encontrado: ${bestMatch.id}`);
         const fullData = await provider.getEpisodes(bestMatch.id);
         
-        // Tenta pegar o link de vídeo do primeiro episódio para playback imediato
-        let firstEpisodeVideoUrl = null;
-        if (fullData.episodes && fullData.episodes.length > 0) {
-          try {
-            const firstEp = fullData.episodes[0];
-            const videoData = await (provider as any).extractVideoLinks(firstEp.id);
-            if (videoData && videoData.length > 0) {
-              // Pega a maior qualidade disponível (geralmente a última da lista)
-              firstEpisodeVideoUrl = videoData[videoData.length - 1].url;
-            }
-          } catch (vErr) {
-            console.warn(`[Backend-Spike] Erro ao pré-carregar vídeo: ${vErr}`);
-          }
-        }
-
         animeData = {
           id: bestMatch.id, 
           title: fullData.title || bestMatch.title,
           description: fullData.synopsis,
           thumbnail: fullData.cover || bestMatch.cover,
           episodes: fullData.episodes,
-          video_url: firstEpisodeVideoUrl,
           score: fullData.score,
           genres: fullData.genres,
           foundOnProvider: true
