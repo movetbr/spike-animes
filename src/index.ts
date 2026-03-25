@@ -132,19 +132,33 @@ app.get('/anime-details/:id', async (c) => {
           episodes: null
         };
 
-        // Smart Linking: Busca no AnimeFire usando os títulos do Jikan
-        const searchTerms = [anime.title, anime.title_japanese, anime.title_english].filter(Boolean);
+        // Smart Linking: Busca no AnimeFire usando os títulos do Jikan (priorizando o principal)
+        const searchTerms = [anime.title, anime.title_english, anime.title_japanese].filter(Boolean);
         console.log(`[Bridge] Smart Linking: Testando termos: ${searchTerms.join(', ')}`);
 
         let localMatch = null;
         for (const term of searchTerms) {
           const results = await provider.search(term);
           if (results.length > 0) {
-            // Fuzzy match simples: verifica se o título do resultado contém parte do termo
-            localMatch = results.find(r =>
-              r.title.toLowerCase().includes(anime.title.toLowerCase().split(' ')[0])
-            ) || results[0];
-            break;
+            const jikanTitle = anime.title.toLowerCase().trim();
+            const jikanTitleEng = (anime.title_english || "").toLowerCase().trim();
+
+            localMatch = results.find(r => {
+              const rTitle = r.title.toLowerCase().replace(/\s*\(dublado\)\s*/i, '').trim();
+              return rTitle === jikanTitle || rTitle === jikanTitleEng;
+            });
+
+            if (!localMatch) {
+              const potentialMatches = results.filter(r => 
+                r.title.toLowerCase().includes(jikanTitle) || 
+                r.title.toLowerCase().includes(jikanTitleEng)
+              );
+              if (potentialMatches.length > 0) {
+                localMatch = potentialMatches.sort((a, b) => a.title.length - b.title.length)[0];
+              }
+            }
+
+            if (localMatch) break;
           }
         }
 
@@ -152,12 +166,34 @@ app.get('/anime-details/:id', async (c) => {
           console.log(`[Bridge] Match encontrado: ${localMatch.title} (${localMatch.id})`);
           const episodesData = await provider.getEpisodes(localMatch.id);
           
+          // Hybrid Episode Merge: Jikan (thumbnails) + AnimeFire (slugs/streaming)
+          let jikanEpisodes: any[] = [];
+          try {
+             const jikanEpsRes = await axios.get(`https://api.jikan.moe/v4/anime/${malId}/videos/episodes`);
+             jikanEpisodes = jikanEpsRes.data.data || [];
+          } catch (e: any) {
+             console.warn(`[Bridge] Não foi possível pegar episódios do Jikan: ${e.message}`);
+          }
+
+          const hybridEpisodes = episodesData.episodes.map((afEp, index) => {
+            const epNumStr = afEp.title.match(/Episódio (\d+)/)?.[1] || (index + 1).toString();
+            const epNum = parseInt(epNumStr);
+            const jikanEp = jikanEpisodes.find((j: any) => j.mal_id === epNum);
+            
+            return {
+              ...afEp,
+              number: epNum,
+              thumbnail: jikanEp?.images?.jpg?.image_url || null,
+            };
+          });
+
           // Prioridade para dados do AnimeFire (PT-BR) conforme pedido do usuário
           baseData.title = localMatch.title;
           baseData.thumbnail = localMatch.cover || baseData.thumbnail;
           baseData.description = episodesData.synopsis || baseData.description;
-          baseData.episodes = episodesData.episodes;
-          baseData.id = localMatch.id; // Atualiza ID para o slug do AnimeFire
+          baseData.episodes = hybridEpisodes;
+          baseData.id = localMatch.id; 
+          baseData.foundOnProvider = true;
         }
       } catch (jikanError: any) {
         console.error(`[Bridge] Erro ao consultar Jikan: ${jikanError.message}`);

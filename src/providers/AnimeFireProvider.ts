@@ -25,31 +25,38 @@ export class AnimeFireProvider extends AnimeProvider {
   // ===== BUSCA (index.php → extractSearchResults) =====
   async search(query: string): Promise<AnimeResult[]> {
     try {
-      const url = `${this.baseUrl}/pesquisar/${encodeURIComponent(query)}`;
+      const url = query 
+        ? `${this.baseUrl}/pesquisar/${encodeURIComponent(query)}`
+        : `${this.baseUrl}/animes-atualizados/1`;
+        
+      console.log(`[AnimeFire] Pesquisando em: ${url}`);
       const { data } = await axios.get(url, { headers: this.headers });
       const $ = cheerio.load(data);
       const results: AnimeResult[] = [];
 
-      // Seletor original do PHP: div[contains(@class, 'divCardUltimosEps')]
-      $("div.divCardUltimosEps").each((_, el) => {
+      // Seletores de cards: divCardUltimosEps (Home/Latest) ou col-6 (Search)
+      $("div.divCardUltimosEps, div.col-6, div.divCardHome").each((_, el) => {
         const link = $(el).find('a').attr('href');
         const img = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
-        const title = $(el).find('h3.animeTitle').text().trim();
+        const title = $(el).find('h3.animeTitle').text().trim() || $(el).find('h4').text().trim();
 
         if (title && link) {
-          results.push({
-            title,
-            url: link,
-            cover: img,
-            id: link.split('/').pop()!
-          });
+          const id = link.split('/').pop()!;
+          if (!results.some(r => r.id === id)) {
+            results.push({
+              title,
+              url: link,
+              cover: img,
+              id
+            });
+          }
         }
       });
 
       return results;
     } catch (error: any) {
       console.error(`[Search Error] ${error.message}`);
-      return []; // Retorna lista vazia em vez de quebrar
+      return []; 
     }
   }
 
