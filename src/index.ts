@@ -151,8 +151,13 @@ app.get('/anime-details/:id', async (c) => {
         if (localMatch) {
           console.log(`[Bridge] Match encontrado: ${localMatch.title} (${localMatch.id})`);
           const episodesData = await provider.getEpisodes(localMatch.id);
+          
+          // Prioridade para dados do AnimeFire (PT-BR) conforme pedido do usuário
+          baseData.title = localMatch.title;
+          baseData.thumbnail = localMatch.cover || baseData.thumbnail;
+          baseData.description = episodesData.synopsis || baseData.description;
           baseData.episodes = episodesData.episodes;
-          baseData.id = localMatch.id; // Atualiza ID para o slug do AnimeFire para facilitar streaming
+          baseData.id = localMatch.id; // Atualiza ID para o slug do AnimeFire
         }
       } catch (jikanError: any) {
         console.error(`[Bridge] Erro ao consultar Jikan: ${jikanError.message}`);
@@ -195,6 +200,55 @@ app.get('/anime-details/:id', async (c) => {
       message: error.message,
       response: { status: '500', text: 'Internal Server Error' }
     }, 500);
+  }
+});
+
+// ===== ROTA: Detalhes em Batch (Múltiplos IDs) =====
+app.post('/anime-details/batch', async (c) => {
+  try {
+    const { ids } = await c.req.json();
+    if (!ids || !Array.isArray(ids)) {
+      return c.json({ error: 'Parâmetro (ids) deve ser um array.' }, 400);
+    }
+
+    // Processa em paralelo para ser rápido
+    const results = await Promise.all(ids.slice(0, 20).map(async (id) => {
+      const idStr = String(id);
+      const isMalId = idStr.startsWith('jikan-') || !isNaN(Number(idStr));
+      const malId = idStr.startsWith('jikan-') ? idStr.replace('jikan-', '') : idStr;
+
+      try {
+        // Busca básica no Jikan para ter o título original
+        const jikanRes = await axios.get(`https://api.jikan.moe/v4/anime/${malId}`);
+        const anime = jikanRes.data.data;
+        
+        // Tenta achar no AnimeFire
+        const searchTerms = [anime.title, anime.title_japanese].filter(Boolean);
+        let match = null;
+        for (const term of searchTerms) {
+          const searchRes = await provider.search(term);
+          if (searchRes.length > 0) {
+            match = searchRes[0];
+            break;
+          }
+        }
+
+        return {
+          id: match ? match.id : `jikan-${malId}`,
+          malId: parseInt(malId),
+          title: match ? match.title : anime.title,
+          thumbnail: match ? match.cover : (anime.images?.webp?.large_image_url || anime.images?.jpg?.large_image_url),
+          score: anime.score,
+          found: !!match
+        };
+      } catch {
+        return { id, error: 'Not found' };
+      }
+    }));
+
+    return c.json({ status: 'success', data: results });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
   }
 });
 
