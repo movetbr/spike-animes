@@ -164,7 +164,7 @@ app.get('/api', async (c) => {
   }
 });
 
-const port = 3000;
+const port = parseInt(process.env.PORT || '3000');
 console.log(`\n🔥 Kaizen API (AnFireAPI TypeScript Edition)`);
 console.log(`➡️  Provedores: ${videoFallbackProviders.map(p => p.name).join(', ')}`);
 console.log(`🚀 Servidor rodando em http://localhost:${port}\n`);
