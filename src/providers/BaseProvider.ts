@@ -3,6 +3,7 @@ export interface AnimeResult {
   url: string;
   cover?: string;
   id: string;
+  provider?: string;
 }
 
 export interface EpisodeResult {
@@ -14,6 +15,8 @@ export interface EpisodeResult {
 export interface VideoSource {
   quality: string;
   url: string;
+  status?: string;
+  type?: string;
 }
 
 // Interface que todo provedor (site de animes da vida real) deve seguir

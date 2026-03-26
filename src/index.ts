@@ -27,14 +27,26 @@ app.get('/', (c) => c.json({
   }
 }));
 
-// ===== ROTA: Busca =====
+// ===== ROTA: Busca Unificada =====
 app.get('/search', async (c) => {
   const query = c.req.query('q');
   if (!query) return c.json({ error: 'Parâmetro (q) é obrigatório.' }, 400);
 
   try {
-    const results = await provider.search(query);
-    return c.json({ source: provider.name, results });
+    // Busca em todos os provedores disponíveis em paralelo
+    const resultsPerProvider = await Promise.all(videoFallbackProviders.map(async (p) => {
+      try {
+        const items = await p.search(query);
+        return items.map(item => ({ ...item, provider: p.name }));
+      } catch {
+        return [];
+      }
+    }));
+
+    return c.json({ 
+      source: 'MultiProvider', 
+      results: resultsPerProvider.flat() 
+    });
   } catch (error: any) {
     return c.json({ error: `Falha na busca.`, details: error.message }, 500);
   }
@@ -51,14 +63,17 @@ app.get('/latest', async (c) => {
 });
 
 // ===== ROTA: Detalhes + Episódios do Anime =====
-// Aceita tanto slug quanto link completo via query param
 app.get('/anime/:slug', async (c) => {
   const slug = c.req.param('slug');
-  const link = c.req.query('link'); // Opcional: ?link=https://animefire.plus/animes/...
+  const providerName = c.req.query('provider'); // Opcional: provider=AnimesOnlineCC
+  const link = c.req.query('link'); 
+
+  // Selecionar o provedor correto (padrão AnimeFire)
+  const activeProvider = videoFallbackProviders.find(p => p.name === providerName) || provider;
 
   try {
-    const data = await provider.getEpisodes(link || slug);
-    return c.json({ source: provider.name, ...data });
+    const data = await activeProvider.getEpisodes(link || slug);
+    return c.json({ source: activeProvider.name, ...data });
   } catch (error: any) {
     return c.json({ error: 'Falha ao extrair detalhes do anime.', details: error.message }, 500);
   }
@@ -112,30 +127,36 @@ app.get('/anime-details/:id', async (c) => {
 
     // Se tivermos um título (passado pelo app via hook do Jikan), fazemos a ponte
     if (queryTitle) {
-      console.log(`[Backend-Spike] Bridge: Buscando match no AnimeFire para: ${queryTitle}`);
-      const results = await provider.search(queryTitle);
+      console.log(`[Backend-Spike] Bridge MultiProvider: Buscando match para: ${queryTitle}`);
       
-      if (results && results.length > 0) {
-        // Encontra o match mais próximo do título enviado
-        const normalizedTarget = queryTitle.toLowerCase().trim();
-        const bestMatch = results.find(r => {
-          const rTitle = r.title.toLowerCase().replace(/\s*\(dublado\)\s*/i, '').trim();
-          return rTitle === normalizedTarget;
-        }) || results.find(r => r.title.toLowerCase().includes(normalizedTarget)) || results[0];
-
-        console.log(`[Backend-Spike] Match encontrado: ${bestMatch.id}`);
-        const fullData = await provider.getEpisodes(bestMatch.id);
+      for (const p of videoFallbackProviders) {
+        const results = await p.search(queryTitle);
         
-        animeData = {
-          id: bestMatch.id, 
-          title: fullData.title || bestMatch.title,
-          description: fullData.synopsis,
-          thumbnail: fullData.cover || bestMatch.cover,
-          episodes: fullData.episodes,
-          score: fullData.score,
-          genres: fullData.genres,
-          foundOnProvider: true
-        };
+        if (results && results.length > 0) {
+          const normalizedTarget = queryTitle.toLowerCase().trim();
+          const bestMatch = results.find(r => {
+            const rTitle = r.title.toLowerCase().replace(/\s*\(dublado\)\s*/i, '').trim();
+            return rTitle === normalizedTarget;
+          }) || results.find(r => r.title.toLowerCase().includes(normalizedTarget)) || results[0];
+
+          if (bestMatch) {
+            console.log(`[Backend-Spike] Match encontrado no ${p.name}: ${bestMatch.id}`);
+            const fullData = await p.getEpisodes(bestMatch.id);
+            
+            animeData = {
+              id: bestMatch.id, 
+              title: fullData.title || bestMatch.title,
+              description: fullData.synopsis,
+              thumbnail: fullData.cover || bestMatch.cover,
+              episodes: fullData.episodes,
+              score: (fullData as any).score,
+              genres: (fullData as any).genres,
+              foundOnProvider: true,
+              provider: p.name // Informar qual provedor venceu
+            };
+            break; // Já achamos, não precisa testar o próximo
+          }
+        }
       }
     }
 
