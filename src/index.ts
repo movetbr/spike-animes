@@ -140,10 +140,16 @@ app.get('/video/:slug/:episode', async (c) => {
   const results = await Promise.allSettled(videoFallbackProviders.map(async (p) => {
     try {
       console.log(`[🎯 Multi-Hub] Buscando em ${p.name} para: ${episodeId}...`);
-      let sources = await p.extractVideoLinks(episodeId);
+      let sources: any[] = [];
+      
+      try {
+        sources = await p.extractVideoLinks(episodeId);
+      } catch (err) {
+        console.log(`[🎯 Multi-Hub] Falha inicial em ${p.name} (ID: ${episodeId}), tentando resgate...`);
+      }
 
       // --- LÓGICA DE RESGATE SMART ---
-      // Se falhar a extração direta e tivermos o título do anime, tentamos um match dinâmico
+      // Se falhar a extração direta (ou der erro) e tivermos o título do anime, tentamos um match dinâmico
       if ((!sources || sources.length === 0) && title) {
         console.log(`[🚑 Resgate] Slug falhou em ${p.name}. Buscando por título: ${title}`);
         const searchResults = await p.search(title);
