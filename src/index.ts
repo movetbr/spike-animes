@@ -223,31 +223,72 @@ app.get('/anime/:id', async (c) => {
         
         console.log(`[Bridge] ${finalEpisodes.length} episódios brutos via ${matchedProvider.name}`);
 
-        // 5.1 FATIAMENTO: Se o scraper retorna TODOS os episódios juntos,
-        // fatiar baseado na contagem da Jikan para a temporada correta.
-        const jikanEpisodeCount = metadata.episodes; // Qtd de eps que a Jikan diz que ESTA temporada tem
-        
-        if (jikanEpisodeCount && finalEpisodes.length > jikanEpisodeCount) {
-          const hasPrequel = metadata.relations?.some(
-            (r: any) => r.relation === 'Prequel' && r.entries?.some((e: any) => e.type === 'anime')
-          );
+        // Determinar qual temporada somos baseado nos prequels
+        const prequelCount = (metadata.relations || [])
+          .filter((r: any) => r.relation === 'Prequel')
+          .flatMap((r: any) => (r.entries || []).filter((e: any) => e.type === 'anime'))
+          .length;
+        const seasonNum = prequelCount + 1; // Season 1 = 0 prequels, Season 2 = 1 prequel
+        const jikanEpisodeCount = metadata.episodes;
 
-          if (hasPrequel) {
-            // Esta é temporada 2+ → pegar os ÚLTIMOS episódios
-            finalEpisodes = finalEpisodes.slice(-jikanEpisodeCount);
-            // Renumerar a partir de 1
-            finalEpisodes = finalEpisodes.map((ep: any, i: number) => ({
-              ...ep,
-              number: i + 1,
-              title: ep.title || `Episódio ${i + 1}`
-            }));
-            console.log(`[Bridge] ✂️ Temporada 2+ → fatiou ${scraperDetails.episodes.length} → ${finalEpisodes.length} episódios (últimos ${jikanEpisodeCount})`);
-          } else {
-            // Esta é temporada 1 → pegar os PRIMEIROS episódios
-            finalEpisodes = finalEpisodes.slice(0, jikanEpisodeCount);
-            console.log(`[Bridge] ✂️ Temporada 1 → fatiou ${scraperDetails.episodes.length} → ${finalEpisodes.length} episódios (primeiros ${jikanEpisodeCount})`);
+        console.log(`[Bridge] Esta é a Temporada ${seasonNum} (Jikan: ${jikanEpisodeCount} eps)`);
+
+        // ESTRATÉGIA 1: Usar episodesBySeason do scraper (abas DooPlay)
+        const episodesBySeason = (scraperDetails as any).episodesBySeason;
+        if (episodesBySeason && Object.keys(episodesBySeason).length > 1) {
+          const seasonKeys = Object.keys(episodesBySeason).map(Number).sort((a, b) => a - b);
+          
+          // Tentar pegar a temporada correspondente
+          const targetSeason = seasonKeys.includes(seasonNum) 
+            ? seasonNum 
+            : seasonKeys[Math.min(seasonNum - 1, seasonKeys.length - 1)];
+
+          if (episodesBySeason[targetSeason]) {
+            finalEpisodes = episodesBySeason[targetSeason];
+            console.log(`[Bridge] ✂️ [episodesBySeason] Temporada ${targetSeason} → ${finalEpisodes.length} episódios`);
           }
         }
+        // ESTRATÉGIA 2: Filtrar por padrão no ID/URL do episódio
+        // Ex: "sousou-no-frieren-2-episodio-X" vs "sousou-no-frieren-episodio-X"
+        else if (finalEpisodes.length > (jikanEpisodeCount || 0) && seasonNum > 1) {
+          // Procurar episódios que têm "-{seasonNum}-episodio" no ID
+          const seasonPattern = `-${seasonNum}-episodio`;
+          const filtered = finalEpisodes.filter((ep: any) => 
+            ep.id?.includes(seasonPattern) || ep.url?.includes(seasonPattern)
+          );
+          
+          if (filtered.length > 0) {
+            finalEpisodes = filtered.sort((a: any, b: any) => (a.number || 0) - (b.number || 0));
+            console.log(`[Bridge] ✂️ [Filtro ID] Padrão "${seasonPattern}" → ${finalEpisodes.length} episódios`);
+          } else {
+            // Não achou pelo padrão, tenta o slice
+            finalEpisodes = finalEpisodes.slice(-jikanEpisodeCount);
+            finalEpisodes = finalEpisodes.map((ep: any, i: number) => ({
+              ...ep, number: i + 1, title: ep.title || `Episódio ${i + 1}`
+            }));
+            console.log(`[Bridge] ✂️ [Slice] Temporada ${seasonNum} → últimos ${jikanEpisodeCount} episódios`);
+          }
+        }
+        // ESTRATÉGIA 3: Temporada 1 com mais episódios do que deveria
+        else if (finalEpisodes.length > (jikanEpisodeCount || 999) && seasonNum === 1) {
+          // Filtrar apenas os episódios SEM número de temporada no ID (são da T1)
+          const s1Filtered = finalEpisodes.filter((ep: any) => {
+            const epId = ep.id || '';
+            // Episódios da T1 geralmente NÃO têm "-2-episodio", "-3-episodio" no ID
+            return !/-\d+-episodio/i.test(epId);
+          });
+          
+          if (s1Filtered.length > 0 && s1Filtered.length <= (jikanEpisodeCount || 999)) {
+            finalEpisodes = s1Filtered.sort((a: any, b: any) => (a.number || 0) - (b.number || 0));
+            console.log(`[Bridge] ✂️ [Filtro T1] Removidos eps de outras temporadas → ${finalEpisodes.length} episódios`);
+          } else {
+            finalEpisodes = finalEpisodes.slice(0, jikanEpisodeCount);
+            console.log(`[Bridge] ✂️ [Slice T1] Primeiros ${jikanEpisodeCount} episódios`);
+          }
+        }
+
+        // Garantir ordenação final por número
+        finalEpisodes.sort((a: any, b: any) => (a.number || 0) - (b.number || 0));
 
         return c.json({
           source: `Hybrid (Jikan + ${matchedProvider.name})`,

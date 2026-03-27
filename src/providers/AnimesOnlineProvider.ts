@@ -156,27 +156,78 @@ export class AnimesOnlineProvider implements AnimeProvider {
         genres.push($(el).text().trim());
       });
 
-      const episodes: EpisodeResult[] = [];
-      // Seletor robusto para DooPlay (episódios simples ou em abas de temporadas)
-      $(".episodios li, .episodio, .se-a li").each((_, el) => {
-        const epLink = $(el).find('a').attr('href');
-        const epTitle = $(el).find('.episodiotitle a, .eptitle a').text().trim() || $(el).find('a').text().trim();
-        const epImg = $(el).find('img').attr('src') || $(el).find('img').attr('data-src');
-        
-        if (epLink) {
-          const epId = epLink.split('/').filter(Boolean).pop()!;
-          const numMatch = epTitle.match(/\d+/);
-          const epNumber = numMatch ? parseInt(numMatch[0]) : 0;
+      // Extrair episódios ORGANIZADOS POR TEMPORADA
+      // DooPlay usa: .se-c (season container) com .se-q (season title) e .se-a (episode list)
+      const episodesBySeason: Record<number, EpisodeResult[]> = {};
+      const allEpisodes: EpisodeResult[] = [];
 
-          episodes.push({
-            id: epId,
-            title: epTitle || `${title} - Ep`,
-            url: epLink,
-            number: epNumber,
-            thumbnail: this.normalizeImg(epImg)
+      const seasonContainers = $('.se-c');
+      
+      if (seasonContainers.length > 0) {
+        // Site com múltiplas temporadas em abas
+        seasonContainers.each((seasonIdx, seasonEl) => {
+          const seasonTitle = $(seasonEl).find('.se-q .title, .se-q span').first().text().trim();
+          // Extrair número da temporada do título (ex: "Temporada 1", "Season 1", "1ª Temporada")
+          const seasonNumMatch = seasonTitle.match(/(\d+)/);
+          const seasonNum = seasonNumMatch ? parseInt(seasonNumMatch[1]) : seasonIdx + 1;
+          
+          const seasonEps: EpisodeResult[] = [];
+          
+          $(seasonEl).find('.se-a li').each((_, el) => {
+            const epLink = $(el).find('a').attr('href');
+            const epTitle = $(el).find('.episodiotitle a, .eptitle a').text().trim() || $(el).find('a').text().trim();
+            const epImg = $(el).find('img').attr('src') || $(el).find('img').attr('data-src');
+            
+            if (epLink) {
+              const epId = epLink.split('/').filter(Boolean).pop()!;
+              const numMatch = epTitle.match(/(\d+)/);
+              const epNumber = numMatch ? parseInt(numMatch[0]) : 0;
+
+              seasonEps.push({
+                id: epId,
+                title: epTitle || `${title} - Ep`,
+                url: epLink,
+                number: epNumber,
+                thumbnail: this.normalizeImg(epImg)
+              });
+            }
           });
-        }
-      });
+
+          // Ordenar episódios por número dentro da temporada
+          seasonEps.sort((a, b) => (a.number || 0) - (b.number || 0));
+          episodesBySeason[seasonNum] = seasonEps;
+          allEpisodes.push(...seasonEps);
+          
+          console.log(`[AnimesOnlineCC] Temporada ${seasonNum}: ${seasonEps.length} episódios`);
+        });
+      } else {
+        // Fallback: site sem abas de temporada (episódios simples)
+        $(".episodios li, .episodio").each((_, el) => {
+          const epLink = $(el).find('a').attr('href');
+          const epTitle = $(el).find('.episodiotitle a, .eptitle a').text().trim() || $(el).find('a').text().trim();
+          const epImg = $(el).find('img').attr('src') || $(el).find('img').attr('data-src');
+          
+          if (epLink) {
+            const epId = epLink.split('/').filter(Boolean).pop()!;
+            const numMatch = epTitle.match(/(\d+)/);
+            const epNumber = numMatch ? parseInt(numMatch[0]) : 0;
+
+            allEpisodes.push({
+              id: epId,
+              title: epTitle || `${title} - Ep`,
+              url: epLink,
+              number: epNumber,
+              thumbnail: this.normalizeImg(epImg)
+            });
+          }
+        });
+        
+        allEpisodes.sort((a, b) => (a.number || 0) - (b.number || 0));
+        episodesBySeason[1] = [...allEpisodes];
+      }
+
+      const totalSeasons = Object.keys(episodesBySeason).length;
+      console.log(`[AnimesOnlineCC] Total: ${allEpisodes.length} episódios em ${totalSeasons} temporada(s)`);
 
       return {
         title,
@@ -186,7 +237,9 @@ export class AnimesOnlineProvider implements AnimeProvider {
         genres,
         year,
         status,
-        episodes: episodes.reverse(),
+        episodes: allEpisodes, // Todos os episódios (backwards compat)
+        episodesBySeason,      // Mapa por temporada (novo!)
+        totalSeasons,
         animeSlug: id
       };
     } catch (error: any) {
