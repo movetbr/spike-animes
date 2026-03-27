@@ -219,7 +219,8 @@ export class AnimesOnlineProvider implements AnimeProvider {
 
       const sources: VideoSource[] = [];
       
-      for (let i = 1; i <= 2; i++) {
+      // Tenta buscar as primeiras 4 opções de player (aba 1 a 4)
+      for (let i = 1; i <= 4; i++) {
         try {
           const ajaxUrl = `${this.baseUrl}/wp-admin/admin-ajax.php`;
           const params = new URLSearchParams();
@@ -237,14 +238,15 @@ export class AnimesOnlineProvider implements AnimeProvider {
           });
 
           if (ajaxRes?.embed_url) {
+            console.log(`[AnimesOnlineCC] Player ${i} encontrado: ${ajaxRes.embed_url}`);
             sources.push({
-              quality: i === 1 ? 'Principal' : 'Backup',
+              quality: `Servidor ${i}${i === 1 ? ' (HD/Principal)' : ''}`,
               url: ajaxRes.embed_url,
               type: 'embed'
             });
           }
         } catch (e) {
-          // Ignora erros de player inexistente
+          // Ignora abas que não existem
         }
       }
 
