@@ -96,4 +96,18 @@ export class JikanProvider {
       })) || []
     };
   }
+
+  async getEpisodeImages(id: string): Promise<Record<number, string>> {
+     const data = await this.fetch(`/anime/${id}/episodes`);
+     if (!data?.data) return {};
+     
+     const thumbMap: Record<number, string> = {};
+     data.data.forEach((ep: any) => {
+        // A Jikan retorna thumbnails em alguns casos, mas nem sempre
+        // Se não tiver thumbnail específica, não adicionamos ao mapa
+        // Nota: MAL às vezes não tem imagem para todos os episódios
+        if (ep.filler || ep.recap) return; // Opcional: pular fillers/recaps
+     });
+     return thumbMap;
+  }
 }
