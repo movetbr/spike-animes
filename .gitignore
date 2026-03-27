@@ -3,3 +3,9 @@ dist/
 .env
 *.log
 tsconfig.tsbuildinfo
+*.json
+!package.json
+!tsconfig.json
+!package-lock.json
+*.firebase-adminsdk-*.json
+firebase-service-account.json

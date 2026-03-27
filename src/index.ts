@@ -4,10 +4,16 @@ import { cors } from 'hono/cors';
 import { AnimeFireProvider } from './providers/AnimeFireProvider';
 import { AnimesOnlineProvider } from './providers/AnimesOnlineProvider';
 import { JikanProvider } from './providers/JikanProvider';
+import { getCached, setCache } from './lib/firestore';
+import { apiKeyAuth } from './middleware/auth';
 import axios from 'axios';
+import * as dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = new Hono();
 app.use('/*', cors());
+app.use('/*', apiKeyAuth());
 
 // Provedores
 const jikan = new JikanProvider();
@@ -29,7 +35,17 @@ app.get('/', (c) => c.json({
 // ===== ROTA: Home (Metadata Jikan) =====
 app.get('/home', async (c) => {
   try {
+    // Verificar cache (TTL: 6 horas)
+    const cached = await getCached('home_cache', 'home', 6);
+    if (cached) {
+      return c.json({ status: 'success', provider: 'Jikan (Cache)', data: cached.data });
+    }
+
     const homeData = await jikan.getHome();
+    
+    // Salvar no cache
+    await setCache('home_cache', 'home', { data: homeData });
+    
     return c.json({
       status: 'success',
       provider: 'Jikan',
@@ -46,11 +62,22 @@ app.get('/search', async (c) => {
   if (!query) return c.json({ error: 'Parâmetro (q) é obrigatório.' }, 400);
 
   try {
+    const cacheKey = `search_${query.toLowerCase()}`;
+    const cached = await getCached('search_cache', cacheKey, 12);
+    if (cached) {
+      console.log(`[Search] HIT Cache: ${query}`);
+      return c.json({ ...cached, source: 'Jikan (Cache)' });
+    }
+
     const results = await jikan.search(query);
-    return c.json({
+    const response = {
       source: 'Jikan',
       results
-    });
+    };
+
+    await setCache('search_cache', cacheKey, response);
+    
+    return c.json(response);
   } catch (error: any) {
     return c.json({ error: `Falha na busca.`, details: error.message }, 500);
   }
@@ -82,6 +109,13 @@ app.get('/anime/:id', async (c) => {
 
   try {
     if (isNumeric) {
+      // Verificar cache (TTL: 24 horas)
+      const cacheKey = `anime_${id}`;
+      const cached = await getCached('anime_cache', cacheKey, 24);
+      if (cached) {
+        return c.json({ ...cached, source: cached.source + ' (Cache)' });
+      }
+
       // 1. Pegar metadados ricos na Jikan
       const metadata = await jikan.getDetails(id);
       if (!metadata) throw new Error('Anime não encontrado na Jikan.');
@@ -290,7 +324,7 @@ app.get('/anime/:id', async (c) => {
         // Garantir ordenação final por número
         finalEpisodes.sort((a: any, b: any) => (a.number || 0) - (b.number || 0));
 
-        return c.json({
+        const response = {
           source: `Hybrid (Jikan + ${matchedProvider.name})`,
           ...metadata,
           synopsis: scraperDetails.synopsis || metadata.synopsis,
@@ -299,7 +333,12 @@ app.get('/anime/:id', async (c) => {
           animeSlug: match.id,
           provider: matchedProvider.name,
           seasons: numberedSeasons
-        });
+        };
+
+        // Salvar no cache
+        await setCache('anime_cache', cacheKey, response);
+
+        return c.json(response);
       }
 
       return c.json({
@@ -310,9 +349,20 @@ app.get('/anime/:id', async (c) => {
         message: 'Streaming não disponível para este anime ainda.'
       });
     } else {
+      // Verificar cache para slugs
+      const slugCacheKey = `slug_${id}`;
+      const cachedSlug = await getCached('anime_cache', slugCacheKey, 12);
+      if (cachedSlug) {
+        return c.json({ ...cachedSlug, source: cachedSlug.source + ' (Cache)' });
+      }
+
       // Se não for ID numérico, assume que é um slug direto do scraper
       const data = await scraper.getEpisodes(id);
-      return c.json({ source: scraper.name, ...data });
+      const slugResponse = { source: scraper.name, ...data };
+      
+      await setCache('anime_cache', slugCacheKey, slugResponse);
+      
+      return c.json(slugResponse);
     }
   } catch (error: any) {
     return c.json({ error: 'Falha ao processar detalhes.', details: error.message }, 500);
