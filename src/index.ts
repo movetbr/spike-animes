@@ -219,14 +219,42 @@ app.get('/anime/:id', async (c) => {
       // 5. Montar resposta
       if (match && matchedProvider) {
         const scraperDetails = await matchedProvider.getEpisodes(match.id);
-        console.log(`[Bridge] ${scraperDetails.episodes?.length || 0} episódios encontrados via ${matchedProvider.name}`);
+        let finalEpisodes = scraperDetails.episodes || [];
+        
+        console.log(`[Bridge] ${finalEpisodes.length} episódios brutos via ${matchedProvider.name}`);
+
+        // 5.1 FATIAMENTO: Se o scraper retorna TODOS os episódios juntos,
+        // fatiar baseado na contagem da Jikan para a temporada correta.
+        const jikanEpisodeCount = metadata.episodes; // Qtd de eps que a Jikan diz que ESTA temporada tem
+        
+        if (jikanEpisodeCount && finalEpisodes.length > jikanEpisodeCount) {
+          const hasPrequel = metadata.relations?.some(
+            (r: any) => r.relation === 'Prequel' && r.entries?.some((e: any) => e.type === 'anime')
+          );
+
+          if (hasPrequel) {
+            // Esta é temporada 2+ → pegar os ÚLTIMOS episódios
+            finalEpisodes = finalEpisodes.slice(-jikanEpisodeCount);
+            // Renumerar a partir de 1
+            finalEpisodes = finalEpisodes.map((ep: any, i: number) => ({
+              ...ep,
+              number: i + 1,
+              title: ep.title || `Episódio ${i + 1}`
+            }));
+            console.log(`[Bridge] ✂️ Temporada 2+ → fatiou ${scraperDetails.episodes.length} → ${finalEpisodes.length} episódios (últimos ${jikanEpisodeCount})`);
+          } else {
+            // Esta é temporada 1 → pegar os PRIMEIROS episódios
+            finalEpisodes = finalEpisodes.slice(0, jikanEpisodeCount);
+            console.log(`[Bridge] ✂️ Temporada 1 → fatiou ${scraperDetails.episodes.length} → ${finalEpisodes.length} episódios (primeiros ${jikanEpisodeCount})`);
+          }
+        }
 
         return c.json({
           source: `Hybrid (Jikan + ${matchedProvider.name})`,
           ...metadata,
           synopsis: scraperDetails.synopsis || metadata.synopsis,
           description: scraperDetails.synopsis || metadata.synopsis,
-          episodes: scraperDetails.episodes,
+          episodes: finalEpisodes,
           animeSlug: match.id,
           provider: matchedProvider.name,
           seasons: numberedSeasons

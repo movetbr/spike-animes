@@ -84,6 +84,7 @@ export class JikanProvider {
       score: anime.score?.toString(),
       rating: anime.rating, // ex: "PG-13 - Teens 13 or older"
       duration: anime.duration, // ex: "24 min per ep"
+      episodes: anime.episodes, // Contagem de episódios dessa temporada (ex: 28, 10)
       genres: anime.genres?.map((g: any) => g.name) || [],
       year: anime.year?.toString() || anime.aired?.prop?.from?.year?.toString(),
       status: anime.status,
