@@ -4,14 +4,13 @@ import { AnimeProvider, AnimeResult, EpisodeResult, VideoSource } from './BasePr
 // Ele é perfeitamente replicável para AnimesOnline.cc ou AnimesVision
 export class BackupProvider extends AnimeProvider {
   name = 'AnimesVision (Mock Backup)';
+  baseUrl = 'https://animesvision.cc';
 
   async search(query: string): Promise<AnimeResult[]> { return []; }
+  async getHome(): Promise<any> { return { sections: [] }; }
   async getEpisodes(id: string) { return { title: '', synopsis: '', cover: '', episodes: [] }; }
   
   async extractVideoLinks(episodeId: string): Promise<VideoSource[]> {
-      // Simula uma espera de raspagem (Ex: acessando puppeteer no AnimesVision)
-      const urlDeBackup = "https://backup-link.mp4";
-      
-      throw new Error("O Scraper do BackupProvider também encontrou bloqueios ou não está implementado 100%.");
+      throw new Error("O Scraper do BackupProvider não está implementado 100%.");
   }
 }
