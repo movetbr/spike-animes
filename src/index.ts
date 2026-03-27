@@ -3,192 +3,160 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { AnimeFireProvider } from './providers/AnimeFireProvider';
 import { AnimesOnlineProvider } from './providers/AnimesOnlineProvider';
+import { JikanProvider } from './providers/JikanProvider';
 import axios from 'axios';
 
 const app = new Hono();
 app.use('/*', cors());
 
-// Provedor principal: AnimeFire (tradução fiel da API PHP do MestreTM)
-const provider = new AnimeFireProvider();
+// Provedores
+const jikan = new JikanProvider(); 
+const scraper = new AnimesOnlineProvider();
+const fallbackScraper = new AnimeFireProvider();
 
-// Provedores de fallback para extração de vídeo
-const videoFallbackProviders = [
-  provider,
-  new AnimesOnlineProvider()
-];
+const videoFallbackProviders = [scraper, fallbackScraper];
 
 app.get('/', (c) => c.json({
-  message: 'Kaizen API 🔥 (Tradução da AnFireAPI PHP → TypeScript)',
+  message: 'Spike Animes API 🔥',
   routes: {
+    home: '/home',
     search: '/search?q=nome_do_anime',
     details: '/anime/:slug',
     video: '/video/:slug/:episode',
-    latest: '/latest'
   }
 }));
 
-// ===== ROTA: Busca Unificada =====
+// ===== ROTA: Home (Metadata Jikan) =====
+app.get('/home', async (c) => {
+  try {
+    const homeData = await jikan.getHome();
+    return c.json({
+      status: 'success',
+      provider: 'Jikan',
+      data: homeData
+    });
+  } catch (error: any) {
+    return c.json({ error: 'Falha ao carregar a home.', details: error.message }, 500);
+  }
+});
+
+// ===== ROTA: Busca (Metadata Jikan) =====
 app.get('/search', async (c) => {
   const query = c.req.query('q');
   if (!query) return c.json({ error: 'Parâmetro (q) é obrigatório.' }, 400);
 
   try {
-    // Busca em todos os provedores disponíveis em paralelo
-    const resultsPerProvider = await Promise.all(videoFallbackProviders.map(async (p) => {
-      try {
-        const items = await p.search(query);
-        return items.map(item => ({ ...item, provider: p.name }));
-      } catch {
-        return [];
-      }
-    }));
-
+    const results = await jikan.search(query);
     return c.json({ 
-      source: 'MultiProvider', 
-      results: resultsPerProvider.flat() 
+      source: 'Jikan', 
+      results 
     });
   } catch (error: any) {
     return c.json({ error: `Falha na busca.`, details: error.message }, 500);
   }
 });
 
-// ===== ROTA: Últimos Animes Atualizados (index.php → animes-atualizados) =====
-app.get('/latest', async (c) => {
-  try {
-    const results = await provider.search(''); // A busca vazia pega os últimos
-    return c.json({ source: provider.name, results });
-  } catch (error: any) {
-    return c.json({ error: 'Falha ao pegar últimos animes.', details: error.message }, 500);
-  }
-});
-
-// ===== ROTA: Detalhes + Episódios do Anime =====
-app.get('/anime/:slug', async (c) => {
-  const slug = c.req.param('slug');
-  const providerName = c.req.query('provider'); // Opcional: provider=AnimesOnlineCC
-  const link = c.req.query('link'); 
-
-  // Selecionar o provedor correto (padrão AnimeFire)
-  const activeProvider = videoFallbackProviders.find(p => p.name === providerName) || provider;
+// ===== ROTA: Detalhes Inteligentes (Ponte Jikan -> Scraper) =====
+app.get('/anime/:id', async (c) => {
+  const id = c.req.param('id');
+  const isNumeric = !isNaN(Number(id));
 
   try {
-    const data = await activeProvider.getEpisodes(link || slug);
-    return c.json({ source: activeProvider.name, ...data });
+    if (isNumeric) {
+      // 1. Pegar metadados ricos na Jikan
+      const metadata = await jikan.getDetails(id);
+      if (!metadata) throw new Error('Anime não encontrado na Jikan.');
+
+      // 2. Tentar achar o anime correspondente no Scraper (Busca Multi-Título)
+      // No MAL, 'title_japanese' costuma ser o nome original/romaji que os scrapers usam.
+      const searchTerms = [
+        metadata.title_japanese, 
+        metadata.title_english, 
+        metadata.title,
+        metadata.title.split(':')[0] // Ex: "Frieren: Beyond..." -> "Frieren"
+      ].filter(Boolean) as string[];
+
+      console.log(`[Bridge] Tentando encontrar match para: ${searchTerms.join(' | ')}`);
+      
+      let match = null;
+      for (const term of searchTerms) {
+        const results = await scraper.search(term);
+        if (results.length > 0) {
+          // Tenta achar um que contenha o nome base ou seja o primeiro
+          match = results.find(r => 
+            r.title.toLowerCase().includes(term.toLowerCase()) || 
+            term.toLowerCase().includes(r.title.toLowerCase())
+          ) || results[0];
+          
+          if (match) break;
+        }
+      }
+
+      if (match) {
+        console.log(`[Bridge] Match encontrado no provedor ${scraper.name}: ${match.id}`);
+        const scraperDetails = await scraper.getEpisodes(match.id);
+        
+        return c.json({
+          source: 'Hybrid (Jikan + Scraper)',
+          ...metadata, // Metadados HD da Jikan (Trailer, Studio, etc)
+          synopsis: scraperDetails.synopsis || metadata.synopsis, // Prioridade Sinopse PT-BR
+          episodes: scraperDetails.episodes, // Episódios reais do scraper
+          animeSlug: match.id,
+          provider: scraper.name
+        });
+      }
+
+      return c.json({
+        source: 'Jikan (No Match)',
+        ...metadata,
+        episodes: [],
+        message: 'Streaming não disponível para este anime ainda no Scraper.'
+      });
+    } else {
+      // Se não for ID numérico, assume que é um slug direto do scraper
+      const data = await scraper.getEpisodes(id);
+      return c.json({ source: scraper.name, ...data });
+    }
   } catch (error: any) {
-    return c.json({ error: 'Falha ao extrair detalhes do anime.', details: error.message }, 500);
+    return c.json({ error: 'Falha ao processar detalhes.', details: error.message }, 500);
   }
 });
 
 // ===== ROTA: Extração de Vídeo com Fallback =====
-// Formato: /video/slug/episodio (ex: /video/naruto-shippuden-todos-os-episodios/1)
 app.get('/video/:slug/:episode', async (c) => {
   const slug = c.req.param('slug');
   const episode = c.req.param('episode');
-  const episodeId = `${slug}/${episode}`;
+  
+  // Lógica inteligente de ID:
+  // Se o 'slug' já contém a palavra 'episodio', usamos ele direto como o ID do episódio (Padrão AnimesOnlineCC)
+  // Caso contrário, montamos slug/episode (Padrão AnimeFire)
+  const episodeId = slug.includes('episodio') ? slug : `${slug}/${episode}`;
 
   const errorLogs: { provider: string; error: string }[] = [];
 
   for (const p of videoFallbackProviders) {
     try {
-      console.log(`[🎯 Fallback] Tentando: ${p.name}...`);
+      console.log(`[🎯 Fallback] Tentando ${p.name} para: ${episodeId}...`);
       const sources = await p.extractVideoLinks(episodeId);
 
       if (sources && sources.length > 0) {
-        console.log(`[✅ SUCESSO] ${p.name} retornou ${sources.length} link(s) de vídeo!`);
         return c.json({
           status: 'success',
           provider: p.name,
-          episode: parseInt(episode),
+          episodeId: episodeId,
           sources
         });
       }
     } catch (error: any) {
-      console.log(`[❌ Erro] ${p.name}: ${error.message}`);
       errorLogs.push({ provider: p.name, error: error.message });
     }
   }
 
   return c.json({
     status: 'failed',
-    message: 'Nenhum provedor conseguiu extrair o vídeo deste episódio.',
+    message: 'Vídeo não encontrado.',
     logs: errorLogs
   }, 500);
-});
-
-// ===== ROTA: Detalhes Unificados (Apenas AnimeFire - Sem Jikan) =====
-app.get('/anime-details/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const queryTitle = c.req.query('title');
-    const idStr = id.toString();
-    const isNumericId = !isNaN(Number(idStr));
-
-    let animeData: any = null;
-
-    // Se tivermos um título (passado pelo app via hook do Jikan), fazemos a ponte
-    if (queryTitle) {
-      console.log(`[Backend-Spike] Bridge MultiProvider: Buscando match para: ${queryTitle}`);
-      
-      for (const p of videoFallbackProviders) {
-        const results = await p.search(queryTitle);
-        
-        if (results && results.length > 0) {
-          const normalizedTarget = queryTitle.toLowerCase().trim();
-          const bestMatch = results.find(r => {
-            const rTitle = r.title.toLowerCase().replace(/\s*\(dublado\)\s*/i, '').trim();
-            return rTitle === normalizedTarget;
-          }) || results.find(r => r.title.toLowerCase().includes(normalizedTarget)) || results[0];
-
-          if (bestMatch) {
-            console.log(`[Backend-Spike] Match encontrado no ${p.name}: ${bestMatch.id}`);
-            const fullData = await p.getEpisodes(bestMatch.id);
-            
-            animeData = {
-              id: bestMatch.id, 
-              title: fullData.title || bestMatch.title,
-              description: fullData.synopsis,
-              thumbnail: fullData.cover || bestMatch.cover,
-              episodes: fullData.episodes,
-              score: (fullData as any).score,
-              genres: (fullData as any).genres,
-              foundOnProvider: true,
-              provider: p.name // Informar qual provedor venceu
-            };
-            break; // Já achamos, não precisa testar o próximo
-          }
-        }
-      }
-    }
-
-    // Se for um ID numérico mas não achamos pelo título, ou se o ID já for o Slug direto
-    if (!animeData) {
-      try {
-        console.log(`[Backend-Spike] Tentativa via ID direto: ${id}`);
-        // Isso resolve o seu exemplo: spike-animes.onrender.com/anime/frieren-todos-os-episodios
-        const directData = await provider.getEpisodes(id); 
-        animeData = {
-           id: id,
-           title: directData.title,
-           description: directData.synopsis,
-           thumbnail: directData.cover,
-           episodes: directData.episodes,
-           score: directData.score
-        };
-      } catch (e) {
-        throw new Error('Anime não encontrado no AnimeFire.');
-      }
-    }
-
-    return c.json({
-      status: 'success',
-      source: 'AnimeFire-Only',
-      data: animeData
-    });
-
-  } catch (error: any) {
-    console.error(`[Backend-Spike Error] ${error.message}`);
-    return c.json({ status: 'error', message: error.message }, 404);
-  }
 });
 
 // ===== ROTA: Detalhes em Batch (Múltiplos IDs) =====
@@ -209,12 +177,12 @@ app.post('/anime-details/batch', async (c) => {
         // Busca básica no Jikan para ter o título original
         const jikanRes = await axios.get(`https://api.jikan.moe/v4/anime/${malId}`);
         const anime = jikanRes.data.data;
-        
-        // Tenta achar no AnimeFire
+
+        // Tenta achar no Scraper
         const searchTerms = [anime.title, anime.title_japanese].filter(Boolean);
         let match = null;
         for (const term of searchTerms) {
-          const searchRes = await provider.search(term);
+          const searchRes = await scraper.search(term);
           if (searchRes.length > 0) {
             match = searchRes[0];
             break;
@@ -257,19 +225,17 @@ app.get('/api', async (c) => {
 
   try {
     // Buscar detalhes do anime
-    const details = await provider.getEpisodes(animeLink || animeSlug!);
+    const details = await scraper.getEpisodes(animeLink || animeSlug!);
 
     // Para cada episódio, buscar os links de vídeo
-    // (AVISO: isso pode demorar bastante para animes com muitos episódios!)
     const maxEpisodes = parseInt(c.req.query('max_episodes') || '0');
     let episodes: any[] = [];
 
     if (maxEpisodes > 0) {
-      // Modo batch: busca vídeos dos primeiros N episódios
       const slug = details.animeSlug || animeSlug;
       for (let ep = 1; ep <= maxEpisodes; ep++) {
         try {
-          const sources = await provider.extractVideoLinks(`${slug}/${ep}`);
+          const sources = await scraper.extractVideoLinks(`${slug}/${ep}`);
           episodes.push({
             episode: ep,
             data: sources.map(s => ({
@@ -279,21 +245,18 @@ app.get('/api', async (c) => {
             }))
           });
         } catch {
-          // Se der erro, significa que não tem mais episódios
           break;
         }
       }
     }
 
     return c.json({
-      anime_slug: details.animeSlug || animeSlug,
+      anime_slug: (details as any).animeSlug || animeSlug,
       anime_title: details.title,
       anime_image: details.cover,
       anime_synopsis: details.synopsis,
-      anime_score: details.score,
-      anime_votes: details.votes,
-      youtube_trailer: details.trailer,
-      anime_info: details.genres,
+      anime_score: details.score || '0.0',
+      anime_info: details.genres || [],
       episodes: maxEpisodes > 0 ? episodes : details.episodes,
       response: { status: '200', text: 'OK' }
     });

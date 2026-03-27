@@ -1,4 +1,4 @@
-import { AnimeProvider, AnimeResult, EpisodeResult, VideoSource } from './BaseProvider';
+import { AnimeProvider, AnimeResult, EpisodeResult, VideoSource, HomeData, HomeSection } from './BaseProvider';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
@@ -44,10 +44,11 @@ export class AnimeFireProvider extends AnimeProvider {
           const id = link.split('/').pop()!;
           if (!results.some(r => r.id === id)) {
             results.push({
+              id,
               title,
+              cover: img || '',
               url: link,
-              cover: img,
-              id
+              provider: this.name
             });
           }
         }
@@ -72,12 +73,10 @@ export class AnimeFireProvider extends AnimeProvider {
 
     // Extraindo metadados (mesmos seletores do PHP original)
     const title = $('h1.quicksand400').text().trim() || $('div.animeInfoName h1').text().trim() || animeSlugOrLink;
-    const altTitle = $('h6.text-gray').text().trim();
     const cover = $("div.sub_animepage_img img").attr('data-src') || $("div.sub_animepage_img img").attr('src') || '';
     const synopsis = $("div.divSinopse span.spanAnimeInfo").text().trim();
     const score = $('h4#anime_score').text().trim();
     const votes = $('h6#anime_votos').text().trim();
-    const trailer = $("div#iframe-trailer iframe").attr('src') || null;
 
     // Extraindo info/gêneros
     const infoTags: string[] = [];
@@ -89,34 +88,24 @@ export class AnimeFireProvider extends AnimeProvider {
     const episodes: EpisodeResult[] = [];
     $("div.div_video_list a, a.lEp.epT").each((_, el) => {
       const href = $(el).attr('href');
-      const epTitle = $(el).text().trim() || `Episódio ${episodes.length + 1}`;
+      const epTitle = $(el).find('.numEp').text().trim() || $(el).text().trim() || `Episódio ${episodes.length + 1}`;
       if (href) {
         episodes.push({
+          id: href.split('/').slice(-2).join('/'),
           title: epTitle,
-          url: href,
-          id: href.split('/').slice(-2).join('/')
+          url: href
         });
       }
     });
 
-    // Extraindo o slug do anime a partir dos links de episódios
-    // PHP: preg_match('#/animes/([^/]+)/#', $href, $matches)
-    let animeSlug = animeSlugOrLink;
-    if (episodes.length > 0) {
-      const slugMatch = episodes[0].url.match(/\/animes\/([^/]+)\//);
-      if (slugMatch) animeSlug = slugMatch[1];
-    }
-
     return {
       title,
-      altTitle,
       synopsis,
       cover,
       score,
       votes,
-      trailer,
-      genres: infoTags.join(', '),
-      animeSlug,
+      genres: infoTags,
+      animeSlug: animeSlugOrLink.split('/').pop()!,
       episodes
     };
   }
@@ -190,6 +179,68 @@ export class AnimeFireProvider extends AnimeProvider {
     return onlineSources.length > 0 ? onlineSources : sources;
   }
 
+  // ===== HOME (Página Inicial) =====
+  async getHome(): Promise<HomeData> {
+    try {
+      const { data } = await axios.get(this.baseUrl, { headers: this.headers });
+      const $ = cheerio.load(data);
+      const sections: HomeSection[] = [];
+
+      // Seção 1: Últimos Episódios
+      const latestEpisodes: AnimeResult[] = [];
+      $("div.divCardUltimosEps").each((_, el) => {
+        const link = $(el).find('a').attr('href');
+        const img = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
+        const title = $(el).find('h3.animeTitle').text().trim();
+        const epNum = $(el).find('span.numEp').text().trim();
+
+        if (title && link) {
+          latestEpisodes.push({
+            id: link.split('/').pop()!,
+            title: `${title} - ${epNum}`,
+            cover: img || '',
+            url: link,
+            provider: this.name
+          });
+        }
+      });
+
+      if (latestEpisodes.length > 0) {
+        sections.push({ title: 'Últimos Episódios', items: latestEpisodes });
+      }
+
+      // Seção 2: Animes Recentes/Destaques
+      const featuredAnimes: AnimeResult[] = [];
+      $("div.divCardHome").each((_, el) => {
+        const link = $(el).find('a').attr('href');
+        const img = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
+        const title = $(el).find('h4').text().trim();
+
+        if (title && link) {
+          featuredAnimes.push({
+            id: link.split('/').pop()!,
+            title,
+            cover: img || '',
+            url: link,
+            provider: this.name
+          });
+        }
+      });
+
+      if (featuredAnimes.length > 0) {
+        sections.push({ title: 'Animes em Destaque', items: featuredAnimes });
+      }
+
+      return {
+        featured: featuredAnimes[0],
+        sections
+      };
+    } catch (error: any) {
+      console.error(`[AnimeFire Home Error] ${error.message}`);
+      return { sections: [] };
+    }
+  }
+
   // ===== Busca o iframe do Blogger na página do episódio (PHP: fetchBloggerIframeUrl) =====
   private async fetchBloggerIframeUrl(episodePageUrl: string): Promise<string | null> {
     try {
@@ -202,7 +253,6 @@ export class AnimeFireProvider extends AnimeProvider {
     }
   }
 
-  // ===== Limpa URLs com barras invertidas (PHP: formatUrl) =====
   private formatUrl(url: string): string {
     return url.replace(/\\\//g, '/').replace(/\\\\/g, '/');
   }
