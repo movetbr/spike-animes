@@ -10,7 +10,7 @@ const app = new Hono();
 app.use('/*', cors());
 
 // Provedores
-const jikan = new JikanProvider(); 
+const jikan = new JikanProvider();
 const scraper = new AnimesOnlineProvider();
 const fallbackScraper = new AnimeFireProvider();
 
@@ -47,9 +47,9 @@ app.get('/search', async (c) => {
 
   try {
     const results = await jikan.search(query);
-    return c.json({ 
-      source: 'Jikan', 
-      results 
+    return c.json({
+      source: 'Jikan',
+      results
     });
   } catch (error: any) {
     return c.json({ error: `Falha na busca.`, details: error.message }, 500);
@@ -70,24 +70,24 @@ app.get('/anime/:id', async (c) => {
       // 2. Tentar achar o anime correspondente no Scraper (Busca Multi-Título)
       // No MAL, 'title_japanese' costuma ser o nome original/romaji que os scrapers usam.
       const searchTerms = [
-        metadata.title_japanese, 
-        metadata.title_english, 
+        metadata.title_japanese,
+        metadata.title_english,
         metadata.title,
         metadata.title.split(':')[0] // Ex: "Frieren: Beyond..." -> "Frieren"
       ].filter(Boolean) as string[];
 
       console.log(`[Bridge] Tentando encontrar match para: ${searchTerms.join(' | ')}`);
-      
+
       let match = null;
       for (const term of searchTerms) {
         const results = await scraper.search(term);
         if (results.length > 0) {
           // Tenta achar um que contenha o nome base ou seja o primeiro
-          match = results.find(r => 
-            r.title.toLowerCase().includes(term.toLowerCase()) || 
+          match = results.find(r =>
+            r.title.toLowerCase().includes(term.toLowerCase()) ||
             term.toLowerCase().includes(r.title.toLowerCase())
           ) || results[0];
-          
+
           if (match) break;
         }
       }
@@ -95,7 +95,7 @@ app.get('/anime/:id', async (c) => {
       if (match) {
         console.log(`[Bridge] Match encontrado no provedor ${scraper.name}: ${match.id}`);
         const scraperDetails = await scraper.getEpisodes(match.id);
-        
+
         return c.json({
           source: 'Hybrid (Jikan + Scraper)',
           ...metadata, // Metadados HD da Jikan (Trailer, Studio, Relations, etc)
@@ -126,7 +126,7 @@ app.get('/anime/:id', async (c) => {
 app.get('/video/:slug/:episode', async (c) => {
   const slug = c.req.param('slug');
   const episode = c.req.param('episode');
-  
+
   // Lógica inteligente de ID:
   // Se o 'slug' já contém a palavra 'episodio', usamos ele direto como o ID do episódio (Padrão AnimesOnlineCC)
   // Caso contrário, montamos slug/episode (Padrão AnimeFire)
@@ -279,7 +279,7 @@ app.get('/api', async (c) => {
 });
 
 const port = parseInt(process.env.PORT || '3000');
-console.log(`\n🔥 Kaizen API (AnFireAPI TypeScript Edition)`);
+console.log(`\n🔥 Spike Animes Api`);
 console.log(`➡️  Provedores: ${videoFallbackProviders.map(p => p.name).join(', ')}`);
 
 serve({ fetch: app.fetch, port });
