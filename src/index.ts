@@ -86,42 +86,115 @@ app.get('/anime/:id', async (c) => {
       const metadata = await jikan.getDetails(id);
       if (!metadata) throw new Error('Anime não encontrado na Jikan.');
 
-      // 2. Tentar achar o anime correspondente no Scraper (Busca Multi-Título)
-      // No MAL, 'title_japanese' costuma ser o nome original/romaji que os scrapers usam.
+      // 2. Limpar títulos para busca nos scrapers
+      const cleanSeasonFromTitle = (title: string) =>
+        title
+          .replace(/\s*(2nd|3rd|4th|5th|\d+th)\s+Season/gi, '')
+          .replace(/\s*Season\s*\d+/gi, '')
+          .replace(/\s*Part\s*\d+/gi, '')
+          .replace(/\s*Cour\s*\d+/gi, '')
+          .replace(/\s*\d+ª?\s*Temporada/gi, '')
+          .trim();
+
+      const rawTitle = metadata.title || '';
+      const rawEnglish = metadata.title_english || '';
+      const cleanedTitle = cleanSeasonFromTitle(rawTitle);
+      const cleanedEnglish = cleanSeasonFromTitle(rawEnglish);
+
+      // Gerar termos de busca priorizando os mais prováveis de funcionar
       const searchTerms = [
-        metadata.title_japanese,
-        metadata.title_english,
-        metadata.title,
-        metadata.title.split(':')[0] // Ex: "Frieren: Beyond..." -> "Frieren"
+        cleanedTitle !== rawTitle ? cleanedTitle : null,          // "Sousou no Frieren" sem "2nd Season"
+        cleanedEnglish !== rawEnglish ? cleanedEnglish : null,    // "Frieren: Beyond..."
+        rawEnglish?.split(':')[0]?.trim(),                        // "Frieren"
+        rawTitle?.split(':')[0]?.trim(),                          // "Sousou no Frieren"
+        rawEnglish,                                               // Título inglês completo
+        rawTitle,                                                 // Título romaji completo
+        metadata.title_japanese,                                  // Japonês (último recurso)
       ].filter(Boolean) as string[];
 
-      console.log(`[Bridge] Tentando encontrar match para: ${searchTerms.join(' | ')}`);
+      // Remover duplicatas mantendo a ordem
+      const uniqueTerms = [...new Set(searchTerms)];
 
-      let match = null;
-      for (const term of searchTerms) {
-        const results = await scraper.search(term);
-        if (results.length > 0) {
-          // Tenta achar um que contenha o nome base ou seja o primeiro
-          match = results.find(r =>
-            r.title.toLowerCase().includes(term.toLowerCase()) ||
-            term.toLowerCase().includes(r.title.toLowerCase())
-          ) || results[0];
+      console.log(`[Bridge] Termos de busca: ${uniqueTerms.join(' | ')}`);
 
-          if (match) break;
+      // 3. Buscar em TODOS os provedores (AnimesOnlineCC + AnimeFire)
+      let match: any = null;
+      let matchedProvider: any = null;
+
+      for (const term of uniqueTerms) {
+        for (const provider of videoFallbackProviders) {
+          try {
+            const results = await provider.search(term);
+            if (results.length > 0) {
+              const termLower = term.toLowerCase();
+              match = results.find(r =>
+                r.title.toLowerCase().includes(termLower) ||
+                termLower.includes(r.title.toLowerCase().split('(')[0].trim())
+              ) || results[0];
+
+              if (match) {
+                matchedProvider = provider;
+                console.log(`[Bridge] ✅ Match em ${provider.name}: "${match.title}" (${match.id})`);
+                break;
+              }
+            }
+          } catch (e: any) {
+            console.log(`[Bridge] ❌ Falha em ${provider.name} para "${term}": ${e.message}`);
+          }
+        }
+        if (match) break;
+      }
+
+      // 4. Construir lista de temporadas a partir das relations da Jikan
+      const seasons: any[] = [{
+        mal_id: parseInt(id),
+        title: metadata.title_english || metadata.title,
+        cover: metadata.cover,
+        isCurrent: true
+      }];
+
+      if (metadata.relations) {
+        for (const rel of metadata.relations) {
+          if (!['Sequel', 'Prequel'].includes(rel.relation)) continue;
+          for (const entry of rel.entries) {
+            if (entry.type === 'anime') {
+              const season = {
+                mal_id: parseInt(entry.id),
+                title: entry.name,
+                relation: rel.relation,
+                isCurrent: false
+              };
+              if (rel.relation === 'Prequel') {
+                seasons.unshift(season);
+              } else {
+                seasons.push(season);
+              }
+            }
+          }
         }
       }
 
-      if (match) {
-        console.log(`[Bridge] Match encontrado no provedor ${scraper.name}: ${match.id}`);
-        const scraperDetails = await scraper.getEpisodes(match.id);
+      // Numerar temporadas
+      const numberedSeasons = seasons.map((s, i) => ({
+        ...s,
+        seasonNumber: i + 1,
+        seasonLabel: `Temporada ${i + 1}`
+      }));
+
+      // 5. Montar resposta
+      if (match && matchedProvider) {
+        const scraperDetails = await matchedProvider.getEpisodes(match.id);
+        console.log(`[Bridge] ${scraperDetails.episodes?.length || 0} episódios encontrados via ${matchedProvider.name}`);
 
         return c.json({
-          source: 'Hybrid (Jikan + Scraper)',
-          ...metadata, // Metadados HD da Jikan (Trailer, Studio, Relations, etc)
-          synopsis: scraperDetails.synopsis || metadata.synopsis, // Prioridade Sinopse PT-BR
-          episodes: scraperDetails.episodes, // Episódios reais do scraper
+          source: `Hybrid (Jikan + ${matchedProvider.name})`,
+          ...metadata,
+          synopsis: scraperDetails.synopsis || metadata.synopsis,
+          description: scraperDetails.synopsis || metadata.synopsis,
+          episodes: scraperDetails.episodes,
           animeSlug: match.id,
-          provider: scraper.name
+          provider: matchedProvider.name,
+          seasons: numberedSeasons
         });
       }
 
@@ -129,7 +202,8 @@ app.get('/anime/:id', async (c) => {
         source: 'Jikan (No Match)',
         ...metadata,
         episodes: [],
-        message: 'Streaming não disponível para este anime ainda no Scraper.'
+        seasons: numberedSeasons,
+        message: 'Streaming não disponível para este anime ainda.'
       });
     } else {
       // Se não for ID numérico, assume que é um slug direto do scraper
