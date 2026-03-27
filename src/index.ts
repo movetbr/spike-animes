@@ -56,6 +56,25 @@ app.get('/search', async (c) => {
   }
 });
 
+// ===== ROTA: Temporadas Reais (Filtro Inteligente) =====
+app.get('/anime/:id/seasons', async (c) => {
+  const id = c.req.param('id');
+  
+  try {
+    console.log(`[Seasons] Buscando temporadas para: ${id}`);
+    const seasons = await jikan.getSeasons(id);
+    
+    return c.json({
+      status: 'success',
+      anime_id: id,
+      total: seasons.length,
+      seasons
+    });
+  } catch (error: any) {
+    return c.json({ error: 'Falha ao buscar temporadas.', details: error.message }, 500);
+  }
+});
+
 // ===== ROTA: Detalhes Inteligentes (Ponte Jikan -> Scraper) =====
 app.get('/anime/:id', async (c) => {
   const id = c.req.param('id');
@@ -121,6 +140,7 @@ app.get('/anime/:id', async (c) => {
     return c.json({ error: 'Falha ao processar detalhes.', details: error.message }, 500);
   }
 });
+
 
 // ===== ROTA: Extração de Vídeo com Fallback =====
 app.get('/video/:slug/:episode', async (c) => {
