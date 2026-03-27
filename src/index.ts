@@ -126,7 +126,8 @@ app.get('/anime/:id', async (c) => {
 app.get('/video/:slug/:episode', async (c) => {
   const slug = c.req.param('slug');
   const episode = c.req.param('episode');
-
+  const title = c.req.query('title');
+  
   // Lógica inteligente de ID:
   // Se o 'slug' já contém a palavra 'episodio', usamos ele direto como o ID do episódio (Padrão AnimesOnlineCC)
   // Caso contrário, montamos slug/episode (Padrão AnimeFire)
@@ -139,7 +140,38 @@ app.get('/video/:slug/:episode', async (c) => {
   const results = await Promise.allSettled(videoFallbackProviders.map(async (p) => {
     try {
       console.log(`[🎯 Multi-Hub] Buscando em ${p.name} para: ${episodeId}...`);
-      const sources = await p.extractVideoLinks(episodeId);
+      let sources = await p.extractVideoLinks(episodeId);
+
+      // --- LÓGICA DE RESGATE SMART ---
+      // Se falhar a extração direta e tivermos o título do anime, tentamos um match dinâmico
+      if ((!sources || sources.length === 0) && title) {
+        console.log(`[🚑 Resgate] Slug falhou em ${p.name}. Buscando por título: ${title}`);
+        const searchResults = await p.search(title);
+        
+        if (searchResults && searchResults.length > 0) {
+          // Tenta um match mais preciso
+          const match = searchResults.find(r => 
+            r.title.toLowerCase().includes(title.toLowerCase()) || 
+            title.toLowerCase().includes(r.title.toLowerCase())
+          ) || searchResults[0];
+
+          console.log(`[🚑 Resgate] Novo Match em ${p.name}: ${match.id}`);
+          
+          let newEpisodeId = match.id;
+          if (p.name === 'AnimeFire') {
+             newEpisodeId = `${match.id}/${episode}`;
+          } else if (p.name === 'AnimesOnlineCC') {
+             // AnimesOnline precisa do slug específico do episódio
+             const details = await p.getEpisodes(match.id);
+             const targetEp = details.episodes.find((e: any) => String(e.number) === String(episode));
+             if (targetEp) newEpisodeId = targetEp.id;
+          }
+
+          console.log(`[🚑 Resgate] Tentando extração com NEW ID: ${newEpisodeId}`);
+          sources = await p.extractVideoLinks(newEpisodeId);
+        }
+      }
+
       return sources.map(s => ({ ...s, provider: p.name }));
     } catch (error: any) {
       logs.push({ provider: p.name, error: error.message });
