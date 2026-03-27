@@ -85,7 +85,15 @@ export class JikanProvider {
       genres: anime.genres?.map((g: any) => g.name) || [],
       year: anime.year?.toString(),
       status: anime.status,
-      trailer: anime.trailer?.embed_url
+      trailer: anime.trailer?.embed_url,
+      relations: anime.relations?.map((rel: any) => ({
+        relation: rel.relation,
+        entries: rel.entry?.map((entry: any) => ({
+          id: entry.mal_id.toString(),
+          name: entry.name,
+          type: entry.type
+        })) || []
+      })) || []
     };
   }
 }

@@ -219,14 +219,16 @@ export class AnimesOnlineProvider implements AnimeProvider {
 
       const sources: VideoSource[] = [];
       
-      // Tenta buscar as primeiras 4 opções de player (aba 1 a 4)
-      for (let i = 1; i <= 4; i++) {
+      // Tenta buscar as abas de player
+      const playerTabs = $('.metaframe.rptss');
+      
+      for (let i = 0; i < playerTabs.length; i++) {
         try {
           const ajaxUrl = `${this.baseUrl}/wp-admin/admin-ajax.php`;
           const params = new URLSearchParams();
           params.append('action', 'doo_player_ajax');
           params.append('post', postId.toString());
-          params.append('nume', i.toString());
+          params.append('nume', (i + 1).toString());
           params.append('type', 'tv');
 
           const { data: ajaxRes } = await axios.post(ajaxUrl, params.toString(), {
@@ -238,15 +240,41 @@ export class AnimesOnlineProvider implements AnimeProvider {
           });
 
           if (ajaxRes?.embed_url) {
-            console.log(`[AnimesOnlineCC] Player ${i} encontrado: ${ajaxRes.embed_url}`);
+            const embedUrl = ajaxRes.embed_url;
+            console.log(`[AnimesOnlineCC] Player ${i+1} encontrado: ${embedUrl}`);
+            
+            // Tenta identificar se é Dublado ou Legendado baseado na aba (DooPlay style)
+            // Geralmente a aba 1 é Legendado e a 2 é Dublado (ou vice-versa)
+            // Mas podemos tentar ler o texto do botão do player se disponível
+            let label = `Servidor ${i+1}`;
+            const tabText = $(`.nav-tabs li:nth-child(${i+1})`).text().toLowerCase();
+            if (tabText.includes('dub')) label = 'Dublado';
+            else if (tabText.includes('leg')) label = 'Legendado';
+
+            // Se for link do Blogger, tenta extrair o MP4 direto do Google Video
+            if (embedUrl.includes('blogger.com')) {
+                const directLink = await this.solveBlogger(embedUrl);
+                if (directLink) {
+                    sources.push({
+                        quality: `${label} (Direct)`,
+                        url: directLink,
+                        type: 'direct',
+                        headers: {
+                            'Referer': 'https://youtube.googleapis.com/'
+                        }
+                    });
+                }
+            }
+
+            // Sempre manter o embed original como fallback se não conseguirmos o direto
             sources.push({
-              quality: `Servidor ${i}${i === 1 ? ' (HD/Principal)' : ''}`,
-              url: ajaxRes.embed_url,
+              quality: sources.length === 0 ? `${label} (Link Original)` : `${label} (Embed)`,
+              url: embedUrl,
               type: 'embed'
             });
           }
-        } catch (e) {
-          // Ignora abas que não existem
+        } catch (e: any) {
+          console.error(`[AnimesOnlineCC] Erro no Player ${i+1}:`, e.message);
         }
       }
 
@@ -254,6 +282,29 @@ export class AnimesOnlineProvider implements AnimeProvider {
       return sources;
     } catch (error: any) {
       throw new Error(`Erro no AnimesOnlineCC: ${error.message}`);
+    }
+  }
+
+  // Escava o iframe do Blogger para achar o link do Google Video (.mp4)
+  private async solveBlogger(url: string): Promise<string | null> {
+    try {
+        const { data: html } = await axios.get(url, { headers: this.headers });
+        // O Blogger guarda as URLs de vídeo em uma variável de script
+        // Padrão: "https://redirector.googlevideo.com/videoplayback?..."
+        const regex = /"(https:\/\/[^"]+googlevideo\.com\/videoplayback[^"]+)"/g;
+        let match;
+        const links: string[] = [];
+        
+        while ((match = regex.exec(html)) !== null) {
+            let directUrl = match[1].replace(/\\u0026/g, '&');
+            // Preferir o itag=22 (720p) se disponível
+            if (directUrl.includes('itag=22')) return directUrl;
+            links.push(directUrl);
+        }
+        
+        return links[0] || null; // Retorna o primeiro (geralmente 360p) se não achou 720p
+    } catch (e: any) {
+        return null;
     }
   }
 }

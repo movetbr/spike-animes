@@ -21,6 +21,7 @@ export interface VideoSource {
   url: string;
   status?: string;
   type?: string;       // embed, direct, m3u8
+  headers?: Record<string, string>;
 }
 
 export interface HomeSection {

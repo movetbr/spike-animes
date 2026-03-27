@@ -169,7 +169,10 @@ export class AnimeFireProvider extends AnimeProvider {
         quality: resolution,
         url: this.formatUrl(rawUrl),
         status: 'ONLINE',
-        type: 'direct'
+        type: 'direct',
+        headers: {
+          'Referer': 'https://animefire.io/'
+        }
       };
     });
 

@@ -98,7 +98,7 @@ app.get('/anime/:id', async (c) => {
         
         return c.json({
           source: 'Hybrid (Jikan + Scraper)',
-          ...metadata, // Metadados HD da Jikan (Trailer, Studio, etc)
+          ...metadata, // Metadados HD da Jikan (Trailer, Studio, Relations, etc)
           synopsis: scraperDetails.synopsis || metadata.synopsis, // Prioridade Sinopse PT-BR
           episodes: scraperDetails.episodes, // Episódios reais do scraper
           animeSlug: match.id,
@@ -132,31 +132,41 @@ app.get('/video/:slug/:episode', async (c) => {
   // Caso contrário, montamos slug/episode (Padrão AnimeFire)
   const episodeId = slug.includes('episodio') ? slug : `${slug}/${episode}`;
 
-  const errorLogs: { provider: string; error: string }[] = [];
+  const allSources: any[] = [];
+  const logs: any[] = [];
 
-  for (const p of videoFallbackProviders) {
+  // Busca em todos os provedores em paralelo para maior performance e opções
+  const results = await Promise.allSettled(videoFallbackProviders.map(async (p) => {
     try {
-      console.log(`[🎯 Fallback] Tentando ${p.name} para: ${episodeId}...`);
+      console.log(`[🎯 Multi-Hub] Buscando em ${p.name} para: ${episodeId}...`);
       const sources = await p.extractVideoLinks(episodeId);
-
-      if (sources && sources.length > 0) {
-        return c.json({
-          status: 'success',
-          provider: p.name,
-          episodeId: episodeId,
-          sources
-        });
-      }
+      return sources.map(s => ({ ...s, provider: p.name }));
     } catch (error: any) {
-      errorLogs.push({ provider: p.name, error: error.message });
+      logs.push({ provider: p.name, error: error.message });
+      throw error;
     }
+  }));
+
+  results.forEach(res => {
+    if (res.status === 'fulfilled' && res.value) {
+      allSources.push(...res.value);
+    }
+  });
+
+  if (allSources.length > 0) {
+    return c.json({
+      status: 'success',
+      episode: episode,
+      sources: allSources,
+      logs
+    });
   }
 
   return c.json({
     status: 'failed',
-    message: 'Vídeo não encontrado.',
-    logs: errorLogs
-  }, 500);
+    message: 'Nenhum vídeo encontrado nos provedores.',
+    logs
+  }, 404);
 });
 
 // ===== ROTA: Detalhes em Batch (Múltiplos IDs) =====
