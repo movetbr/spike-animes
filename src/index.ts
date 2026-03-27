@@ -86,7 +86,7 @@ app.get('/anime/:id', async (c) => {
       const metadata = await jikan.getDetails(id);
       if (!metadata) throw new Error('Anime não encontrado na Jikan.');
 
-      // 2. Limpar títulos para busca nos scrapers
+      // 2. Limpar títulos para busca nos scrapers (somente como FALLBACK)
       const cleanSeasonFromTitle = (title: string) =>
         title
           .replace(/\s*(2nd|3rd|4th|5th|\d+th)\s+Season/gi, '')
@@ -101,14 +101,16 @@ app.get('/anime/:id', async (c) => {
       const cleanedTitle = cleanSeasonFromTitle(rawTitle);
       const cleanedEnglish = cleanSeasonFromTitle(rawEnglish);
 
-      // Gerar termos de busca priorizando os mais prováveis de funcionar
+      // TÍTULO ORIGINAL PRIMEIRO! Depois versões limpas como fallback.
+      // Isso garante que "Sousou no Frieren 2nd Season" ache a 2ª temporada,
+      // e "Sousou no Frieren" ache a 1ª.
       const searchTerms = [
-        cleanedTitle !== rawTitle ? cleanedTitle : null,          // "Sousou no Frieren" sem "2nd Season"
+        rawTitle,                                                 // "Sousou no Frieren 2nd Season" ← EXATO
+        rawEnglish,                                               // "Frieren: Beyond Journey's End Season 2"
+        cleanedTitle !== rawTitle ? cleanedTitle : null,          // "Sousou no Frieren" (fallback)
         cleanedEnglish !== rawEnglish ? cleanedEnglish : null,    // "Frieren: Beyond..."
         rawEnglish?.split(':')[0]?.trim(),                        // "Frieren"
         rawTitle?.split(':')[0]?.trim(),                          // "Sousou no Frieren"
-        rawEnglish,                                               // Título inglês completo
-        rawTitle,                                                 // Título romaji completo
         metadata.title_japanese,                                  // Japonês (último recurso)
       ].filter(Boolean) as string[];
 
@@ -120,21 +122,36 @@ app.get('/anime/:id', async (c) => {
       // 3. Buscar em TODOS os provedores (AnimesOnlineCC + AnimeFire)
       let match: any = null;
       let matchedProvider: any = null;
+      const originalTitleLower = rawTitle.toLowerCase();
 
       for (const term of uniqueTerms) {
         for (const provider of videoFallbackProviders) {
           try {
             const results = await provider.search(term);
             if (results.length > 0) {
+              // Matching inteligente: comparar com o título ORIGINAL (não o termo de busca)
+              // 1. Match exato
+              const exactMatch = results.find(r =>
+                r.title.toLowerCase().trim() === originalTitleLower.trim()
+              );
+              // 2. Match parcial (título do resultado contém o original ou vice-versa)
+              const partialMatch = results.find(r => {
+                const rTitle = r.title.toLowerCase().split('(')[0].trim();
+                return rTitle.includes(originalTitleLower) ||
+                       originalTitleLower.includes(rTitle);
+              });
+              // 3. Match pelo termo de busca atual
               const termLower = term.toLowerCase();
-              match = results.find(r =>
+              const termMatch = results.find(r =>
                 r.title.toLowerCase().includes(termLower) ||
                 termLower.includes(r.title.toLowerCase().split('(')[0].trim())
-              ) || results[0];
+              );
+
+              match = exactMatch || partialMatch || termMatch || results[0];
 
               if (match) {
                 matchedProvider = provider;
-                console.log(`[Bridge] ✅ Match em ${provider.name}: "${match.title}" (${match.id})`);
+                console.log(`[Bridge] ✅ Match em ${provider.name}: "${match.title}" (${match.id}) [${exactMatch ? 'exato' : partialMatch ? 'parcial' : termMatch ? 'termo' : 'fallback'}]`);
                 break;
               }
             }
@@ -158,7 +175,7 @@ app.get('/anime/:id', async (c) => {
           if (!['Sequel', 'Prequel'].includes(rel.relation)) continue;
           for (const entry of rel.entries) {
             if (entry.type === 'anime') {
-              const season = {
+              const season: any = {
                 mal_id: parseInt(entry.id),
                 title: entry.name,
                 relation: rel.relation,
@@ -171,6 +188,24 @@ app.get('/anime/:id', async (c) => {
               }
             }
           }
+        }
+      }
+
+      // 4.1 Buscar covers das temporadas que não têm (via Jikan)
+      for (const season of seasons) {
+        if (season.cover) continue;
+        try {
+          await new Promise(r => setTimeout(r, 350)); // Rate limit Jikan
+          const res = await axios.get(`https://api.jikan.moe/v4/anime/${season.mal_id}`);
+          const data = res.data?.data;
+          if (data) {
+            season.cover = data.images?.webp?.large_image_url || data.images?.jpg?.large_image_url || '';
+            season.episodes_count = data.episodes || 0;
+            season.year = data.year?.toString() || data.aired?.prop?.from?.year?.toString() || '';
+            season.score = data.score?.toString() || '';
+          }
+        } catch (e: any) {
+          console.log(`[Seasons] Erro ao buscar cover para ${season.mal_id}: ${e.message}`);
         }
       }
 
