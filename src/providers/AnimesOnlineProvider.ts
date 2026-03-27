@@ -53,16 +53,7 @@ export class AnimesOnlineProvider implements AnimeProvider {
       const $ = cheerio.load(data);
       const sections: HomeSection[] = [];
 
-      // HELPER: Normaliza URL da imagem
-      const normalizeImg = (img?: string) => {
-        if (!img) return '';
-        if (img.startsWith('//')) return `https:${img}`;
-        if (img.startsWith('/')) return `${this.baseUrl}${img}`;
-        if (img.startsWith('wp-content')) return `${this.baseUrl}/${img}`;
-        return img;
-      };
-
-      // HELPER: Função interna para extrair itens de uma seção (DooPlay style)
+      // Mapeia o objeto da DooPlay para o nosso AnimeResult padronizado
       const extractSection = (container: any): AnimeResult[] => {
         const items: AnimeResult[] = [];
         $(container).find('.item').each((_, el) => {
@@ -76,7 +67,7 @@ export class AnimesOnlineProvider implements AnimeProvider {
             items.push({
               id: link.split('/').filter(Boolean).pop()!,
               title: ep ? `${title} - ${ep}` : title,
-              cover: normalizeImg(img),
+              cover: this.normalizeImg(img),
               url: link,
               score: score || '0.0',
               provider: this.name
@@ -126,7 +117,7 @@ export class AnimesOnlineProvider implements AnimeProvider {
           popular.push({
             id: link.split('/').filter(Boolean).pop()!,
             title,
-            cover: normalizeImg(img),
+            cover: this.normalizeImg(img),
             url: link,
             score: score || '0.0',
             provider: this.name
@@ -170,6 +161,8 @@ export class AnimesOnlineProvider implements AnimeProvider {
       $(".episodios li, .episodio, .se-a li").each((_, el) => {
         const epLink = $(el).find('a').attr('href');
         const epTitle = $(el).find('.episodiotitle a, .eptitle a').text().trim() || $(el).find('a').text().trim();
+        const epImg = $(el).find('img').attr('src') || $(el).find('img').attr('data-src');
+        
         if (epLink) {
           const epId = epLink.split('/').filter(Boolean).pop()!;
           const numMatch = epTitle.match(/\d+/);
@@ -179,7 +172,8 @@ export class AnimesOnlineProvider implements AnimeProvider {
             id: epId,
             title: epTitle || `${title} - Ep`,
             url: epLink,
-            number: epNumber
+            number: epNumber,
+            thumbnail: this.normalizeImg(epImg)
           });
         }
       });
@@ -306,5 +300,13 @@ export class AnimesOnlineProvider implements AnimeProvider {
     } catch (e: any) {
         return null;
     }
+  }
+
+  private normalizeImg(img?: string) {
+    if (!img) return '';
+    if (img.startsWith('//')) return `https:${img}`;
+    if (img.startsWith('/')) return `${this.baseUrl}${img}`;
+    if (img.startsWith('wp-content')) return `${this.baseUrl}/${img}`;
+    return img;
   }
 }

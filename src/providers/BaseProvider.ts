@@ -14,6 +14,7 @@ export interface EpisodeResult {
   title: string;
   url: string;
   number?: number;     // Número real do episódio
+  thumbnail?: string;  // URL da imagem do episódio
 }
 
 export interface VideoSource {
