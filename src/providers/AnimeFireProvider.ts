@@ -90,10 +90,14 @@ export class AnimeFireProvider extends AnimeProvider {
       const href = $(el).attr('href');
       const epTitle = $(el).find('.numEp').text().trim() || $(el).text().trim() || `Episódio ${episodes.length + 1}`;
       if (href) {
+        const numMatch = epTitle.match(/\d+/);
+        const epNumber = numMatch ? parseInt(numMatch[0]) : episodes.length + 1;
+
         episodes.push({
           id: href.split('/').slice(-2).join('/'),
           title: epTitle,
-          url: href
+          url: href,
+          number: epNumber
         });
       }
     });

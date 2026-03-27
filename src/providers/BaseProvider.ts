@@ -13,6 +13,7 @@ export interface EpisodeResult {
   id: string;          // Slug do episódio (ex: solo-leveling-1x1)
   title: string;
   url: string;
+  number?: number;     // Número real do episódio
 }
 
 export interface VideoSource {

@@ -172,10 +172,14 @@ export class AnimesOnlineProvider implements AnimeProvider {
         const epTitle = $(el).find('.episodiotitle a, .eptitle a').text().trim() || $(el).find('a').text().trim();
         if (epLink) {
           const epId = epLink.split('/').filter(Boolean).pop()!;
+          const numMatch = epTitle.match(/\d+/);
+          const epNumber = numMatch ? parseInt(numMatch[0]) : 0;
+
           episodes.push({
             id: epId,
             title: epTitle || `${title} - Ep`,
-            url: epLink
+            url: epLink,
+            number: epNumber
           });
         }
       });
