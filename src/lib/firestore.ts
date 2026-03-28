@@ -78,15 +78,23 @@ export async function getCached<T = any>(
     if (!data) return null;
 
     // Verificar TTL
-    const cachedAt = data.cachedAt?.toDate?.() || new Date(data.cachedAt);
+    let cachedAt: Date;
+    if (data.cachedAt && typeof data.cachedAt.toDate === 'function') {
+      cachedAt = data.cachedAt.toDate();
+    } else if (data.cachedAt) {
+      cachedAt = new Date(data.cachedAt);
+    } else {
+      cachedAt = new Date(0); // Forçar expiração se não houver data
+    }
+
     const age = (Date.now() - cachedAt.getTime()) / (1000 * 60 * 60); // horas
     
     if (age > ttlHours) {
-      console.log(`[Cache] EXPIRED: ${collection}/${docId} (${age.toFixed(1)}h > ${ttlHours}h)`);
+      console.log(`[Cache] ⏳ EXPIRED: ${collection}/${docId} (${age.toFixed(1)}h > ${ttlHours}h)`);
       return null;
     }
 
-    console.log(`[Cache] HIT: ${collection}/${docId} (${age.toFixed(1)}h old)`);
+    console.log(`[Cache] 🎯 HIT: ${collection}/${docId} (${age.toFixed(1)}h old)`);
     return data as T;
   } catch (error: any) {
     console.error(`[Cache] Erro ao ler ${collection}/${docId}: ${error.message}`);
@@ -106,14 +114,15 @@ export async function setCache(
   if (!db) return;
 
   try {
+    const start = Date.now();
     await db.collection(collection).doc(sanitizeDocId(docId)).set({
       ...data,
       cachedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
     
-    console.log(`[Cache] SET: ${collection}/${docId}`);
+    console.log(`[Cache] ✅ SET SUCCESS: ${collection}/${docId} (took ${Date.now() - start}ms)`);
   } catch (error: any) {
-    console.error(`[Cache] Erro ao salvar ${collection}/${docId}: ${error.message}`);
+    console.error(`[Cache] ❌ SET ERROR: ${collection}/${docId}: ${error.message}`);
   }
 }
 

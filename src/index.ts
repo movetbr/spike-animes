@@ -111,10 +111,15 @@ app.get('/anime/:id', async (c) => {
     if (isNumeric) {
       // Verificar cache (TTL: 24 horas)
       const cacheKey = `anime_${id}`;
+      // Log para depuração
+      console.log(`[Cache] Buscando no Firestore: anime_cache/${cacheKey}`);
       const cached = await getCached('anime_cache', cacheKey, 24);
+      
       if (cached) {
-        return c.json({ ...cached, source: cached.source + ' (Cache)' });
+        console.log(`[Cache] ✅ HIT: anime_cache/${cacheKey}`);
+        return c.json({ ...cached, source: (cached.source || 'Hybrid') + ' (Cache)' });
       }
+      console.log(`[Cache] ❌ MISS: anime_cache/${cacheKey}. Iniciando scraping...`);
 
       // 1. Pegar metadados ricos na Jikan
       const metadata = await jikan.getDetails(id);
@@ -324,18 +329,24 @@ app.get('/anime/:id', async (c) => {
         // Garantir ordenação final por número
         finalEpisodes.sort((a: any, b: any) => (a.number || 0) - (b.number || 0));
 
+        // Priorizar sinopse do Scraper (PT-BR) se disponível
+        const finalSynopsis = scraperDetails.synopsis && scraperDetails.synopsis.length > 10
+          ? scraperDetails.synopsis 
+          : metadata.synopsis;
+
         const response = {
           source: `Hybrid (Jikan + ${matchedProvider.name})`,
           ...metadata,
-          synopsis: scraperDetails.synopsis || metadata.synopsis,
-          description: scraperDetails.synopsis || metadata.synopsis,
+          synopsis: finalSynopsis,
+          description: finalSynopsis,
           episodes: finalEpisodes,
           animeSlug: match.id,
           provider: matchedProvider.name,
           seasons: numberedSeasons
         };
 
-        // Salvar no cache
+        // Salvar no cache (Aguardar para garantir persistência)
+        console.log(`[Cache] 💾 Salvando no Firestore: ${cacheKey} (${finalEpisodes.length} episódios, Sinopse: ${finalSynopsis?.substring(0, 30)}...)`);
         await setCache('anime_cache', cacheKey, response);
 
         return c.json(response);
