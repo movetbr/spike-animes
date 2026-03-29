@@ -114,13 +114,39 @@ export async function setCache(
   if (!db) return;
 
   try {
+    let saveData = { ...data };
+    
+    // Verificar tamanho estimado (Firestore limit: 1MB)
+    let jsonSize = JSON.stringify(saveData).length;
+    
+    if (jsonSize > 900000) {
+      console.warn(`[Cache] ⚠️ Documento muito grande (${(jsonSize/1024).toFixed(0)}KB). Removendo thumbnails...`);
+      // Remover thumbnails dos episódios para reduzir tamanho
+      if (saveData.episodes && Array.isArray(saveData.episodes)) {
+        saveData.episodes = saveData.episodes.map((ep: any) => ({
+          id: ep.id,
+          title: ep.title,
+          number: ep.number
+        }));
+      }
+      // Remover covers das seasons também
+      if (saveData.seasons && Array.isArray(saveData.seasons)) {
+        saveData.seasons = saveData.seasons.map((s: any) => ({
+          ...s,
+          cover: '' // Remove cover URL
+        }));
+      }
+      jsonSize = JSON.stringify(saveData).length;
+      console.log(`[Cache] 📐 Tamanho após slim: ${(jsonSize/1024).toFixed(0)}KB`);
+    }
+
     const start = Date.now();
     await db.collection(collection).doc(sanitizeDocId(docId)).set({
-      ...data,
+      ...saveData,
       cachedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
     
-    console.log(`[Cache] ✅ SET SUCCESS: ${collection}/${docId} (took ${Date.now() - start}ms)`);
+    console.log(`[Cache] ✅ SET SUCCESS: ${collection}/${docId} (${(jsonSize/1024).toFixed(0)}KB, took ${Date.now() - start}ms)`);
   } catch (error: any) {
     console.error(`[Cache] ❌ SET ERROR: ${collection}/${docId}: ${error.message}`);
   }

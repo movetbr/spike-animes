@@ -345,9 +345,20 @@ app.get('/anime/:id', async (c) => {
           seasons: numberedSeasons
         };
 
-        // Salvar no cache (Aguardar para garantir persistência)
-        console.log(`[Cache] 💾 Salvando no Firestore: ${cacheKey} (${finalEpisodes.length} episódios, Sinopse: ${finalSynopsis?.substring(0, 30)}...)`);
-        await setCache('anime_cache', cacheKey, response);
+        // Salvar no cache (versão slim - sem URLs dos episódios pois /video resolve dinamicamente)
+        const slimEpisodes = finalEpisodes.map((ep: any) => ({
+          id: ep.id,
+          title: ep.title,
+          number: ep.number,
+          thumbnail: ep.thumbnail || ''
+        }));
+        const cacheData = {
+          ...response,
+          episodes: slimEpisodes
+        };
+        const estimatedSize = JSON.stringify(cacheData).length;
+        console.log(`[Cache] 💾 Salvando: ${cacheKey} (${slimEpisodes.length} eps, ~${(estimatedSize/1024).toFixed(0)}KB, Sinopse: ${finalSynopsis?.substring(0, 50)}...)`);
+        await setCache('anime_cache', cacheKey, cacheData);
 
         return c.json(response);
       }
@@ -386,53 +397,64 @@ app.get('/video/:slug/:episode', async (c) => {
   const slug = c.req.param('slug');
   const episode = c.req.param('episode');
   const title = c.req.query('title');
+  const epId = c.req.query('epId'); // ID original do episódio (direto do scraper)
   
-  // Lógica inteligente de ID:
-  // Se o 'slug' já contém a palavra 'episodio', usamos ele direto como o ID do episódio (Padrão AnimesOnlineCC)
-  // Caso contrário, montamos slug/episode (Padrão AnimeFire)
-  const episodeId = slug.includes('episodio') ? slug : `${slug}/${episode}`;
+  // ID clássico (fallback): slug/episode ou slug direto se já for ID de episódio
+  const classicId = slug.includes('episodio') ? slug : `${slug}/${episode}`;
+
+  console.log(`[Video] slug=${slug}, ep=${episode}, epId=${epId || 'N/A'}, classicId=${classicId}`);
 
   const allSources: any[] = [];
   const logs: any[] = [];
 
-  // Busca em todos os provedores em paralelo para maior performance e opções
+  // Busca em todos os provedores em paralelo
   const results = await Promise.allSettled(videoFallbackProviders.map(async (p) => {
     try {
-      console.log(`[🎯 Multi-Hub] Buscando em ${p.name} para: ${episodeId}...`);
       let sources: any[] = [];
       
-      try {
-        sources = await p.extractVideoLinks(episodeId);
-      } catch (err) {
-        console.log(`[🎯 Multi-Hub] Falha inicial em ${p.name} (ID: ${episodeId}), tentando resgate...`);
+      // 1. Tentar com epId original do scraper (mais preciso - referencia o episódio real)
+      if (epId) {
+        try {
+          console.log(`[🎯 Multi-Hub] ${p.name}: tentando epId direto: ${epId}`);
+          sources = await p.extractVideoLinks(epId);
+        } catch (err: any) {
+          console.log(`[🎯 Multi-Hub] ${p.name}: epId falhou (${err.message})`);
+        }
       }
 
-      // --- LÓGICA DE RESGATE SMART ---
-      // Se falhar a extração direta (ou der erro) e tivermos o título do anime, tentamos um match dinâmico
+      // 2. Fallback: ID clássico (slug/episode)
+      if (!sources || sources.length === 0) {
+        try {
+          console.log(`[🎯 Multi-Hub] ${p.name}: tentando classicId: ${classicId}`);
+          sources = await p.extractVideoLinks(classicId);
+        } catch (err: any) {
+          console.log(`[🎯 Multi-Hub] ${p.name}: classicId falhou (${err.message})`);
+        }
+      }
+
+      // 3. Resgate por título (último recurso)
       if ((!sources || sources.length === 0) && title) {
-        console.log(`[🚑 Resgate] Slug falhou em ${p.name}. Buscando por título: ${title}`);
+        console.log(`[🚑 Resgate] Buscando por título em ${p.name}: ${title}`);
         const searchResults = await p.search(title);
         
         if (searchResults && searchResults.length > 0) {
-          // Tenta um match mais preciso
           const match = searchResults.find(r => 
             r.title.toLowerCase().includes(title.toLowerCase()) || 
             title.toLowerCase().includes(r.title.toLowerCase())
           ) || searchResults[0];
 
-          console.log(`[🚑 Resgate] Novo Match em ${p.name}: ${match.id}`);
+          console.log(`[🚑 Resgate] Match em ${p.name}: ${match.id}`);
           
           let newEpisodeId = match.id;
           if (p.name === 'AnimeFire') {
              newEpisodeId = `${match.id}/${episode}`;
           } else if (p.name === 'AnimesOnlineCC') {
-             // AnimesOnline precisa do slug específico do episódio
              const details = await p.getEpisodes(match.id);
              const targetEp = details.episodes.find((e: any) => String(e.number) === String(episode));
              if (targetEp) newEpisodeId = targetEp.id;
           }
 
-          console.log(`[🚑 Resgate] Tentando extração com NEW ID: ${newEpisodeId}`);
+          console.log(`[🚑 Resgate] Tentando com NEW ID: ${newEpisodeId}`);
           sources = await p.extractVideoLinks(newEpisodeId);
         }
       }
